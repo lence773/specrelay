@@ -1,0 +1,344 @@
+openapi: 3.1.0
+info:
+  title: SpecRelay Local API
+  version: 1.0.0
+  description: Contract for the Go/PostgreSQL SpecRelay service. All mutating resource operations use optimistic versions.
+servers:
+  - url: /api/v1
+security:
+  - sessionCookie: []
+  - bearerToken: []
+tags:
+  - {name: Health}
+  - {name: Projects}
+  - {name: Filesystem}
+  - {name: Intakes}
+  - {name: Plans}
+  - {name: Tasks}
+  - {name: Events}
+  - {name: Settings}
+paths:
+  /auth/exchange:
+    post:
+      security: []
+      operationId: exchangeAccessToken
+      requestBody: {required: false, content: {application/json: {schema: {type: object, properties: {token: {type: string}}}}}}
+      responses:
+        '200': {description: Authenticated, headers: {Set-Cookie: {schema: {type: string}}}, content: {application/json: {schema: {type: object, properties: {state: {const: authenticated}}}}}}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+  /filesystem/directories:
+    get:
+      tags: [Filesystem]
+      operationId: listDirectories
+      parameters: [{name: path, in: query, required: false, schema: {type: string}, description: Absolute directory path; defaults to the local user home directory}]
+      responses: {'200': {description: Directory listing, content: {application/json: {schema: {$ref: '#/components/schemas/DirectoryListing'}}}}, default: {$ref: '#/components/responses/Error'}}
+  /projects:
+    get:
+      tags: [Projects]
+      operationId: listProjects
+      responses: {'200': {description: Projects, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Project'}}}}}, default: {$ref: '#/components/responses/Error'}}
+    post:
+      tags: [Projects]
+      operationId: createProject
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/ProjectInput'}}}}
+      responses: {'201': {description: Created, content: {application/json: {schema: {$ref: '#/components/schemas/Project'}}}}, default: {$ref: '#/components/responses/Error'}}
+  /projects/{projectId}:
+    parameters: [{$ref: '#/components/parameters/ProjectId'}]
+    get:
+      tags: [Projects]
+      operationId: getProject
+      responses: {'200': {description: Project, content: {application/json: {schema: {$ref: '#/components/schemas/Project'}}}}, default: {$ref: '#/components/responses/Error'}}
+    put:
+      tags: [Projects]
+      operationId: updateProject
+      requestBody: {required: true, content: {application/json: {schema: {allOf: [{$ref: '#/components/schemas/ProjectInput'}, {$ref: '#/components/schemas/VersionInput'}]}}}}
+      responses: {'200': {description: Updated, content: {application/json: {schema: {$ref: '#/components/schemas/Project'}}}}, '409': {$ref: '#/components/responses/VersionConflict'}, default: {$ref: '#/components/responses/Error'}}
+    delete:
+      tags: [Projects]
+      operationId: deleteProject
+      parameters: [{name: version, in: query, required: true, schema: {type: integer, format: int64}}]
+      responses: {'204': {description: Deleted}, '409': {$ref: '#/components/responses/VersionConflict'}, default: {$ref: '#/components/responses/Error'}}
+  /projects/{projectId}/settings:
+    parameters: [{$ref: '#/components/parameters/ProjectId'}]
+    get:
+      tags: [Projects]
+      operationId: getProjectSettings
+      responses: {'200': {description: Settings, content: {application/json: {schema: {$ref: '#/components/schemas/ProjectSettings'}}}}, default: {$ref: '#/components/responses/Error'}}
+    put:
+      tags: [Projects]
+      operationId: updateProjectSettings
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/ProjectSettings'}}}}
+      responses: {'200': {description: Settings, content: {application/json: {schema: {$ref: '#/components/schemas/ProjectSettings'}}}}, '409': {$ref: '#/components/responses/VersionConflict'}, default: {$ref: '#/components/responses/Error'}}
+  /projects/{projectId}/automation/{action}:
+    parameters: [{$ref: '#/components/parameters/ProjectId'}, {name: action, in: path, required: true, schema: {type: string, enum: [start, stop]}}]
+    post:
+      tags: [Projects]
+      operationId: setProjectAutomation
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/VersionInput'}}}}
+      responses: {'200': {description: Updated project, content: {application/json: {schema: {$ref: '#/components/schemas/Project'}}}}, '409': {$ref: '#/components/responses/VersionConflict'}, default: {$ref: '#/components/responses/Error'}}
+  /projects/{projectId}/intakes:
+    parameters: [{$ref: '#/components/parameters/ProjectId'}]
+    get:
+      tags: [Intakes]
+      operationId: listIntakes
+      responses: {'200': {description: Intakes, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Intake'}}}}}, default: {$ref: '#/components/responses/Error'}}
+    post:
+      tags: [Intakes]
+      operationId: createIntake
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/IntakeInput'}}}}
+      responses: {'201': {description: Created, content: {application/json: {schema: {type: object, required: [intake], properties: {intake: {$ref: '#/components/schemas/Intake'}, job: {oneOf: [{$ref: '#/components/schemas/Job'}, {type: 'null'}]}}}}}}, default: {$ref: '#/components/responses/Error'}}
+  /projects/{projectId}/intakes/discuss:
+    parameters: [{$ref: '#/components/parameters/ProjectId'}]
+    post:
+      tags: [Intakes]
+      operationId: discussRequirement
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/RequirementDiscussionRequest'}}}}
+      responses: {'200': {description: Requirement discussion response, content: {application/json: {schema: {$ref: '#/components/schemas/RequirementDiscussionResult'}}}}, default: {$ref: '#/components/responses/Error'}}
+  /intakes/{intakeId}:
+    parameters: [{$ref: '#/components/parameters/IntakeId'}]
+    get:
+      tags: [Intakes]
+      operationId: getIntake
+      responses: {'200': {description: Intake, content: {application/json: {schema: {$ref: '#/components/schemas/Intake'}}}}, default: {$ref: '#/components/responses/Error'}}
+    put:
+      tags: [Intakes]
+      operationId: updateIntake
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [title, body, status, version], properties: {title: {type: string}, body: {type: string}, status: {$ref: '#/components/schemas/IntakeStatus'}, version: {type: integer, format: int64}}}}}}
+      responses: {'200': {description: Updated, content: {application/json: {schema: {$ref: '#/components/schemas/Intake'}}}}, '409': {$ref: '#/components/responses/VersionConflict'}, default: {$ref: '#/components/responses/Error'}}
+  /intakes/{intakeId}/generate:
+    parameters: [{$ref: '#/components/parameters/IntakeId'}]
+    post:
+      tags: [Intakes]
+      operationId: generatePlan
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/PlanGenerationInput'}}}}
+      responses: {'202': {$ref: '#/components/responses/Accepted'}, '409': {$ref: '#/components/responses/VersionConflict'}, default: {$ref: '#/components/responses/Error'}}
+  /intakes/{intakeId}/attachments:
+    parameters: [{$ref: '#/components/parameters/IntakeId'}]
+    post:
+      tags: [Intakes]
+      operationId: uploadAttachment
+      requestBody: {required: true, content: {multipart/form-data: {schema: {type: object, required: [file], properties: {file: {type: string, format: binary}}}}}}
+      responses: {'201': {description: Attachment, content: {application/json: {schema: {$ref: '#/components/schemas/Attachment'}}}}, default: {$ref: '#/components/responses/Error'}}
+  /projects/{projectId}/plans:
+    parameters: [{$ref: '#/components/parameters/ProjectId'}]
+    get:
+      tags: [Plans]
+      operationId: listPlans
+      responses: {'200': {description: Plans, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Plan'}}}}}, default: {$ref: '#/components/responses/Error'}}
+  /plans/{planId}:
+    parameters: [{$ref: '#/components/parameters/PlanId'}]
+    get:
+      tags: [Plans]
+      operationId: getPlan
+      responses: {'200': {description: Plan detail, content: {application/json: {schema: {type: object, required: [plan, tasks], properties: {plan: {$ref: '#/components/schemas/Plan'}, tasks: {type: array, items: {$ref: '#/components/schemas/PlanTask'}}}}}}}, default: {$ref: '#/components/responses/Error'}}
+    delete:
+      tags: [Plans]
+      operationId: deletePlan
+      parameters: [{name: version, in: query, required: true, schema: {type: integer, format: int64, minimum: 1}}]
+      responses: {'204': {description: Deleted}, '409': {$ref: '#/components/responses/VersionConflict'}, default: {$ref: '#/components/responses/Error'}}
+  /plans/{planId}/tasks:
+    parameters: [{$ref: '#/components/parameters/PlanId'}]
+    get:
+      tags: [Tasks]
+      operationId: listPlanTasks
+      responses: {'200': {description: Tasks, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/PlanTask'}}}}}, default: {$ref: '#/components/responses/Error'}}
+  /plans/{planId}/run:
+    parameters: [{$ref: '#/components/parameters/PlanId'}]
+    post:
+      tags: [Plans]
+      operationId: runPlan
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/PlanRunInput'}}}}
+      responses: {'202': {$ref: '#/components/responses/Accepted'}, '409': {$ref: '#/components/responses/VersionConflict'}, default: {$ref: '#/components/responses/Error'}}
+  /plans/{planId}/stop:
+    parameters: [{$ref: '#/components/parameters/PlanId'}]
+    post:
+      tags: [Plans]
+      operationId: stopPlan
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/VersionInput'}}}}
+      responses: {'202': {description: Stop requested, content: {application/json: {schema: {type: object, required: [plan, jobIds], properties: {plan: {$ref: '#/components/schemas/Plan'}, jobIds: {type: array, items: {type: string, format: uuid}}}}}}}, '409': {$ref: '#/components/responses/VersionConflict'}, default: {$ref: '#/components/responses/Error'}}
+  /tasks/{taskId}/{action}:
+    parameters: [{$ref: '#/components/parameters/TaskId'}, {name: action, in: path, required: true, schema: {type: string, enum: [run, retry]}}]
+    post:
+      tags: [Tasks]
+      operationId: runTask
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/TaskRunInput'}}}}
+      responses: {'202': {$ref: '#/components/responses/Accepted'}, '409': {$ref: '#/components/responses/VersionConflict'}, default: {$ref: '#/components/responses/Error'}}
+  /tasks/{taskId}/stop:
+    parameters: [{$ref: '#/components/parameters/TaskId'}]
+    post:
+      tags: [Tasks]
+      operationId: stopTask
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/VersionInput'}}}}
+      responses: {'202': {description: Stop requested, content: {application/json: {schema: {type: object, required: [task, jobIds], properties: {task: {$ref: '#/components/schemas/PlanTask'}, jobIds: {type: array, items: {type: string, format: uuid}}}}}}}, '409': {$ref: '#/components/responses/VersionConflict'}, default: {$ref: '#/components/responses/Error'}}
+  /projects/{projectId}/agent-runs:
+    parameters: [{$ref: '#/components/parameters/ProjectId'}]
+    get:
+      tags: [AgentRuns]
+      operationId: listAgentRuns
+      parameters: [{name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 100}}]
+      responses: {'200': {description: Agent runs, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/AgentRun'}}}}}, default: {$ref: '#/components/responses/Error'}}
+  /agent-runs/{agentRunId}/log:
+    parameters: [{name: agentRunId, in: path, required: true, schema: {type: string, format: uuid}}]
+    get:
+      tags: [AgentRuns]
+      operationId: getAgentRunLog
+      parameters: [{name: before, in: query, required: false, schema: {type: integer, format: int64, minimum: 0}, description: Exclusive byte cursor returned by nextBefore; omit for newest entries}, {name: limit, in: query, required: false, schema: {type: integer, minimum: 1, maximum: 200, default: 50}, description: Number of complete log entries to return}]
+      responses: {'200': {description: Latest complete agent log entries, returned in chronological order, content: {application/json: {schema: {$ref: '#/components/schemas/AgentRunLog'}}}}, default: {$ref: '#/components/responses/Error'}}
+  /agents/probe:
+    post:
+      tags: [Projects]
+      operationId: probeAgent
+      description: Detect both configured local CLI commands. This diagnostic operation never selects a business execution provider and never changes ProjectSettings.agentProvider.
+      requestBody: {required: true, content: {application/json: {schema: {type: object, required: [projectId], additionalProperties: false, properties: {projectId: {type: string, format: uuid}}}}}}
+      responses: {'200': {description: Independent Codex CLI and Claude CLI probe results, content: {application/json: {schema: {$ref: '#/components/schemas/CLIProbeResponse'}}}}, default: {$ref: '#/components/responses/Error'}}
+  /settings/mcp-token/rotate:
+    post:
+      tags: [Settings]
+      operationId: rotateMcpToken
+      responses: {'201': {description: New token returned once, content: {application/json: {schema: {type: object, required: [token], properties: {token: {type: string}}}}}}, default: {$ref: '#/components/responses/Error'}}
+  /events:
+    get:
+      tags: [Events]
+      operationId: listEvents
+      parameters: [{name: projectId, in: query, schema: {type: string, format: uuid}}, {name: after, in: query, schema: {type: integer, format: int64, default: 0}}]
+      responses: {'200': {description: Events, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Event'}}}}}, default: {$ref: '#/components/responses/Error'}}
+  /events/stream:
+    get:
+      tags: [Events]
+      operationId: streamEvents
+      parameters: [{name: projectId, in: query, schema: {type: string, format: uuid}}, {name: Last-Event-ID, in: header, schema: {type: integer, format: int64}}]
+      responses: {'200': {description: Server-sent Event records, content: {text/event-stream: {schema: {type: string}}}}, default: {$ref: '#/components/responses/Error'}}
+components:
+  securitySchemes:
+    sessionCookie: {type: apiKey, in: cookie, name: specrelay_session}
+    bearerToken: {type: http, scheme: bearer}
+  parameters:
+    ProjectId: {name: projectId, in: path, required: true, schema: {type: string, format: uuid}}
+    IntakeId: {name: intakeId, in: path, required: true, schema: {type: string, format: uuid}}
+    PlanId: {name: planId, in: path, required: true, schema: {type: string, format: uuid}}
+    TaskId: {name: taskId, in: path, required: true, schema: {type: string, format: uuid}}
+  responses:
+    Accepted: {description: Job queued, content: {application/json: {schema: {$ref: '#/components/schemas/AsyncResponse'}}}}
+    Error: {description: Error response, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    Unauthorized: {description: Authentication required, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+    VersionConflict: {description: Optimistic version conflict, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+  schemas:
+    CLIProvider:
+      type: string
+      enum: [codex, claude]
+      description: CLI provider used for a business agent invocation. No other provider value is valid.
+    VersionInput: {type: object, required: [version], properties: {version: {type: integer, format: int64, minimum: 1}}}
+    PlanGenerationInput:
+      type: object
+      required: [version]
+      additionalProperties: false
+      properties:
+        version: {type: integer, format: int64, minimum: 1}
+        provider:
+          $ref: '#/components/schemas/CLIProvider'
+          description: Optional provider override for this plan-generation job. When omitted, the server uses the project's current ProjectSettings.agentProvider; clients must not materialize that default.
+    PlanRunInput:
+      type: object
+      required: [version]
+      additionalProperties: false
+      properties:
+        version: {type: integer, format: int64, minimum: 1}
+        provider:
+          $ref: '#/components/schemas/CLIProvider'
+          description: Optional provider override for this plan execution. An explicit value applies to every ordinary downstream task queued by this run and is retained by automatic retries of those jobs. When omitted, downstream jobs also omit the override and resolve ProjectSettings.agentProvider on the server.
+    TaskRunInput:
+      type: object
+      required: [version]
+      additionalProperties: false
+      properties:
+        version: {type: integer, format: int64, minimum: 1}
+        provider:
+          $ref: '#/components/schemas/CLIProvider'
+          description: Optional provider override for this newly queued manual run or retry. Manual retries do not implicitly inherit a previous job's provider; omission uses the project's current ProjectSettings.agentProvider. Automatic retries of this same job retain its original payload.
+    DirectoryEntry: {type: object, required: [name, path], properties: {name: {type: string}, path: {type: string}}}
+    DirectoryListing: {type: object, required: [path, directories], properties: {path: {type: string}, parentPath: {type: string}, directories: {type: array, items: {$ref: '#/components/schemas/DirectoryEntry'}}}}
+    ProjectInput: {type: object, required: [name, workspacePath], properties: {name: {type: string, minLength: 1}, description: {type: string}, workspacePath: {type: string, minLength: 1}}}
+    ResourceBase: {type: object, required: [id, createdAt, updatedAt, version], properties: {id: {type: string, format: uuid}, createdAt: {type: string, format: date-time}, updatedAt: {type: string, format: date-time}, version: {type: integer, format: int64}}}
+    Project: {allOf: [{$ref: '#/components/schemas/ResourceBase'}, {type: object, required: [name, description, workspacePath, automationEnabled], properties: {name: {type: string}, description: {type: string}, workspacePath: {type: string}, automationEnabled: {type: boolean}}}]}
+    ProjectSettings:
+      type: object
+      required: [projectId, validationCommand, agentProvider, codexCommand, codexArgs, claudeCommand, claudeArgs, planGenerationTimeoutSeconds, taskExecutionTimeoutSeconds, maxRetries, allowedEnv, createdAt, updatedAt, version]
+      properties: {projectId: {type: string, format: uuid}, validationCommand: {type: string}, agentProvider: {$ref: '#/components/schemas/CLIProvider'}, codexCommand: {type: string}, codexArgs: {type: array, items: {type: string}}, claudeCommand: {type: string}, claudeArgs: {type: array, items: {type: string}}, planGenerationTimeoutSeconds: {type: integer}, taskExecutionTimeoutSeconds: {type: integer}, maxRetries: {type: integer}, allowedEnv: {type: array, items: {type: string}}, createdAt: {type: string, format: date-time}, updatedAt: {type: string, format: date-time}, version: {type: integer, format: int64}}
+    RequirementDiscussionMessage:
+      type: object
+      required: [role, content]
+      additionalProperties: false
+      properties:
+        role: {type: string, enum: [user, assistant]}
+        content: {type: string, minLength: 1}
+    RequirementDiscussionRequest:
+      type: object
+      required: [title, body, messages]
+      additionalProperties: false
+      properties:
+        title: {type: string}
+        body: {type: string}
+        provider:
+          $ref: '#/components/schemas/CLIProvider'
+          description: Optional provider override for this discussion round only. Every later round resolves its own request independently; omission uses the project's current ProjectSettings.agentProvider and does not lock the provider returned by an earlier round.
+        messages:
+          type: array
+          minItems: 1
+          maxItems: 24
+          items: {$ref: '#/components/schemas/RequirementDiscussionMessage'}
+    RequirementDiscussionResult:
+      type: object
+      required: [provider, reply, title, body, ready]
+      additionalProperties: false
+      properties:
+        provider: {$ref: '#/components/schemas/CLIProvider'}
+        reply: {type: string}
+        title: {type: string}
+        body: {type: string}
+        ready: {type: boolean}
+    IntakeStatus: {type: string, enum: [open, planning, planned, closed, plan_failed]}
+    IntakeInput:
+      type: object
+      required: [kind, title, body]
+      additionalProperties: false
+      properties:
+        kind: {type: string, enum: [requirement, feedback]}
+        parentIntakeId: {type: [string, 'null'], format: uuid}
+        title: {type: string, minLength: 1}
+        body: {type: string}
+        provider:
+          $ref: '#/components/schemas/CLIProvider'
+          description: Optional provider override only for plan generation automatically queued when this request creates a requirement with project automation enabled. When omitted, the queued job carries no override and uses ProjectSettings.agentProvider on the server. It does not change the project default.
+
+    Intake: {allOf: [{$ref: '#/components/schemas/ResourceBase'}, {type: object, required: [projectId, kind, title, body, status, configSnapshot], properties: {projectId: {type: string, format: uuid}, kind: {type: string, enum: [requirement, feedback]}, parentIntakeId: {type: [string, 'null'], format: uuid}, title: {type: string}, body: {type: string}, status: {$ref: '#/components/schemas/IntakeStatus'}, configSnapshot: {type: object}}}]}
+    PlanSpec: {type: object, required: [title, summary, tasks, finalValidation], additionalProperties: false, properties: {title: {type: string}, summary: {type: string}, tasks: {type: array, items: {type: object, required: [title, scope, acceptance], properties: {title: {type: string}, scope: {type: array, items: {type: string}}, acceptance: {type: array, items: {type: string}}}}}, finalValidation: {type: array, items: {type: string}}}}
+    Plan: {allOf: [{$ref: '#/components/schemas/ResourceBase'}, {type: object, required: [projectId, intakeId, title, spec, markdown, status], properties: {projectId: {type: string, format: uuid}, intakeId: {type: string, format: uuid}, title: {type: string}, spec: {$ref: '#/components/schemas/PlanSpec'}, markdown: {type: string}, status: {type: string, enum: [generating, ready, running, validating, completed, blocked, cancelled]}}}]}
+    PlanTask: {allOf: [{$ref: '#/components/schemas/ResourceBase'}, {type: object, required: [projectId, planId, taskKey, position, title, scope, acceptance, status], properties: {projectId: {type: string, format: uuid}, planId: {type: string, format: uuid}, taskKey: {type: string, pattern: '^P[0-9]{3,}$'}, position: {type: integer}, title: {type: string}, scope: {type: array, items: {type: string}}, acceptance: {type: array, items: {type: string}}, status: {type: string, enum: [pending, queued, running, succeeded, failed, cancelled]}, sessionId: {type: string}, startedAt: {type: [string, 'null'], format: date-time}, finishedAt: {type: [string, 'null'], format: date-time}}}]}
+    Job: {allOf: [{$ref: '#/components/schemas/ResourceBase'}, {type: object, required: [projectId, type, aggregateType, aggregateId, priority, status, runAfter, attempt, maxAttempts, idempotencyKey], properties: {projectId: {type: string, format: uuid}, type: {type: string}, aggregateType: {type: string}, aggregateId: {type: string, format: uuid}, priority: {type: integer}, status: {type: string, enum: [queued, leased, running, retry_wait, succeeded, failed, cancelled]}, runAfter: {type: string, format: date-time}, attempt: {type: integer}, maxAttempts: {type: integer}, idempotencyKey: {type: string}}}]}
+    Attachment: {allOf: [{$ref: '#/components/schemas/ResourceBase'}, {type: object, required: [projectId, intakeId, originalName, mimeType, sizeBytes, sha256], properties: {projectId: {type: string, format: uuid}, intakeId: {type: string, format: uuid}, originalName: {type: string}, mimeType: {type: string}, sizeBytes: {type: integer, format: int64}, sha256: {type: string}}}]}
+    AgentRun: {allOf: [{$ref: '#/components/schemas/ResourceBase'}, {type: object, required: [projectId, provider, commandSummary, status, durationMs, startedAt], properties: {projectId: {type: string, format: uuid}, jobId: {type: [string, 'null'], format: uuid}, taskId: {type: [string, 'null'], format: uuid}, provider: {oneOf: [{$ref: '#/components/schemas/CLIProvider'}, {const: validation}]}, commandSummary: {type: string}, pid: {type: [integer, 'null']}, sessionId: {type: string}, status: {type: string, enum: [starting, running, succeeded, failed, cancelled, timed_out]}, exitCode: {type: [integer, 'null']}, durationMs: {type: integer, format: int64}, terminationReason: {type: string}, startedAt: {type: string, format: date-time}, finishedAt: {type: [string, 'null'], format: date-time}}}]}
+    CLIProbeResult:
+      type: object
+      required: [provider, available, output, exitCode, error]
+      additionalProperties: false
+      properties:
+        provider: {$ref: '#/components/schemas/CLIProvider'}
+        available: {type: boolean, description: True when the configured command completed its version probe successfully}
+        output: {type: string, description: Captured stdout and stderr from this provider's version probe}
+        exitCode: {type: [integer, 'null'], description: Process exit code, or null when the process could not be started}
+        error: {type: [string, 'null'], description: Provider-specific probe error, or null on success}
+    CLIProbeResponse:
+      type: object
+      required: [results]
+      additionalProperties: false
+      properties:
+        results:
+          type: array
+          minItems: 2
+          maxItems: 2
+          description: Exactly one result for codex and one for claude. Results are diagnostic only and do not affect queued or future business execution or ProjectSettings.agentProvider.
+          items: {$ref: '#/components/schemas/CLIProbeResult'}
+    AgentRunLog: {type: object, required: [runId, status, provider, lines, sizeBytes, hasMore, updatedAt], properties: {runId: {type: string, format: uuid}, status: {type: string}, provider: {oneOf: [{$ref: '#/components/schemas/CLIProvider'}, {const: validation}]}, lines: {type: array, items: {type: string}, description: Complete physical log entries in chronological order}, sizeBytes: {type: integer, format: int64}, hasMore: {type: boolean}, nextBefore: {type: [integer, 'null'], format: int64, description: Pass this as before to load older entries}, updatedAt: {type: string, format: date-time}}}
+    Event: {type: object, required: [id, type, aggregateType, aggregateId, resourceVersion, payload, occurredAt], properties: {id: {type: integer, format: int64}, projectId: {type: [string, 'null'], format: uuid}, type: {type: string}, aggregateType: {type: string}, aggregateId: {type: string, format: uuid}, resourceVersion: {type: integer, format: int64}, payload: {type: object}, occurredAt: {type: string, format: date-time}}}
+    AsyncResponse: {type: object, required: [jobId, state, resourceVersion], properties: {jobId: {type: string, format: uuid}, state: {type: string}, resourceVersion: {type: integer, format: int64}}}
+    Error: {type: object, required: [code, message, requestId], properties: {code: {type: string}, message: {type: string}, details: {}, requestId: {type: string, format: uuid}}}

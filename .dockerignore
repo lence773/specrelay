@@ -1,0 +1,13 @@
+.git
+.github
+.idea
+node_modules
+**/node_modules
+frontend/dist
+backend/specrelay
+release
+release-*
+.specrelay-runtime
+.claude
+.claude-sessions
+*.log

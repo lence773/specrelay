@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://specrelay.local/schemas/plan-spec.json",
+  "title": "SpecRelay PlanSpec",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["title", "summary", "tasks", "finalValidation"],
+  "properties": {
+    "title": {"type": "string", "minLength": 1},
+    "summary": {"type": "string", "minLength": 1},
+    "tasks": {"type": "array", "minItems": 1, "maxItems": 100, "items": {"$ref": "#/$defs/task"}},
+    "finalValidation": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}
+  },
+  "$defs": {"task": {"type": "object", "additionalProperties": false, "required": ["title", "scope", "acceptance"], "properties": {"title": {"type": "string", "minLength": 1}, "scope": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}, "acceptance": {"type": "array", "minItems": 1, "items": {"type": "string", "minLength": 1}}}}}
+}

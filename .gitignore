@@ -1,0 +1,25 @@
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+
+# Environment and local runtime data
+.env
+.env.*
+!.env.example
+.specrelay-runtime/
+data/
+
+# Go
+backend/specrelay
+backend/coverage.out
+
+# Frontend
+frontend/node_modules/
+frontend/dist/
+frontend/*.tsbuildinfo
+frontend/coverage/
+
+# Logs and temporary files
+*.log
+*.tmp

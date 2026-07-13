@@ -1,0 +1,22 @@
+name: specrelay-production
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: specrelay
+      POSTGRES_USER: specrelay
+      POSTGRES_PASSWORD: ${PRODUCTION_POSTGRES_PASSWORD:?set PRODUCTION_POSTGRES_PASSWORD in .env.production}
+    ports:
+      - "127.0.0.1:${PRODUCTION_POSTGRES_PORT:-54330}:5432"
+    volumes:
+      - specrelay-production-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U specrelay -d specrelay"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+volumes:
+  specrelay-production-postgres:
