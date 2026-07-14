@@ -6,7 +6,7 @@ export function Overview({project,intakes,plans,events,onNavigate}:{project:Proj
   const active=plans.filter(p=>['running','validating'].includes(p.status)).length
   const completed=plans.filter(p=>p.status==='completed').length
   const visibleEvents=events.filter(event=>event.type!=='agent.output')
-  return <div className="page">
+  return <div className="page overview-page">
     <section className="hero">
       <div><span className="eyebrow">工作区概览</span><h1>{project.name}</h1><p>{project.description||'从需求出发，自动交付经过验证的代码。'}</p></div>
       <div className="workspace-pill"><span>工作目录</span><strong>{project.workspacePath}</strong></div>

@@ -264,7 +264,7 @@ components:
           $ref: '#/components/schemas/CLIProvider'
           description: Optional provider override for this newly queued manual run or retry. Manual retries do not implicitly inherit a previous job's provider; omission uses the project's current ProjectSettings.agentProvider. Automatic retries of this same job retain its original payload.
     DirectoryEntry: {type: object, required: [name, path], properties: {name: {type: string}, path: {type: string}}}
-    DirectoryListing: {type: object, required: [path, directories], properties: {path: {type: string}, parentPath: {type: string}, directories: {type: array, items: {$ref: '#/components/schemas/DirectoryEntry'}}}}
+    DirectoryListing: {type: object, required: [path, roots, directories], properties: {path: {type: string}, parentPath: {type: string}, roots: {type: array, items: {$ref: '#/components/schemas/DirectoryEntry'}}, directories: {type: array, items: {$ref: '#/components/schemas/DirectoryEntry'}}}}
     ProjectInput: {type: object, required: [name, workspacePath], properties: {name: {type: string, minLength: 1}, description: {type: string}, workspacePath: {type: string, minLength: 1}}}
     ResourceBase: {type: object, required: [id, createdAt, updatedAt, version], properties: {id: {type: string, format: uuid}, createdAt: {type: string, format: date-time}, updatedAt: {type: string, format: date-time}, version: {type: integer, format: int64}}}
     Project: {allOf: [{$ref: '#/components/schemas/ResourceBase'}, {type: object, required: [name, description, workspacePath, automationEnabled], properties: {name: {type: string}, description: {type: string}, workspacePath: {type: string}, automationEnabled: {type: boolean}}}]}

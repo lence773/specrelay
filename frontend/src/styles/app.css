@@ -1191,9 +1191,14 @@ textarea {
   margin-top: 22px;
 }
 .auth-screen,
-.splash,
-.welcome {
+.splash {
   min-height: 100vh;
+  display: grid;
+  place-items: center;
+}
+.welcome {
+  min-height: calc(100vh - var(--workspace-topbar-height));
+  min-height: calc(100dvh - var(--workspace-topbar-height));
   display: grid;
   place-items: center;
 }
@@ -1410,6 +1415,42 @@ textarea {
 }
 .directory-toolbar .text-button:hover {
   color: var(--text);
+}
+.directory-roots {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 9px;
+}
+.directory-roots > span {
+  flex: none;
+  color: var(--muted);
+  font-size: 8px;
+}
+.directory-roots > div {
+  display: flex;
+  min-width: 0;
+  gap: 6px;
+  overflow-x: auto;
+}
+.directory-roots button {
+  flex: none;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: #151b20;
+  color: #b6bdc3;
+  padding: 4px 8px;
+  font-size: 9px;
+  cursor: pointer;
+}
+.directory-roots button:hover,
+.directory-roots button.active {
+  border-color: #365b4c;
+  background: #1b3128;
+  color: var(--accent);
+}
+.directory-roots button:disabled {
+  cursor: wait;
 }
 .directory-list {
   height: 230px;
@@ -3468,5 +3509,43 @@ select {
   .event-head,
   .event-row {
     grid-template-columns: minmax(0, 1.8fr) minmax(0, 1fr) 0.5fr;
+  }
+}
+
+
+/* Keep the entry and overview screens inside the desktop viewport. */
+@media (min-width: 721px) {
+  .workspace-main > .content > .overview-page {
+    height: 100%;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .overview-page > .hero,
+  .overview-page > .metric-grid {
+    flex: none;
+  }
+  .overview-page > .hero {
+    margin-bottom: 20px;
+  }
+  .overview-page > .metric-grid {
+    margin-bottom: 14px;
+  }
+  .overview-page > .two-column {
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+  .overview-page .panel {
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .overview-page .rows,
+  .overview-page .timeline {
+    min-height: 0;
+    overflow-y: auto;
+    overscroll-behavior-y: contain;
   }
 }

@@ -43,9 +43,15 @@ npm --prefix frontend run build
 
 printf 'Building host backend sidecar for %s…\n' "$target_triple"
 mkdir -p desktop/src-tauri/binaries desktop/src-tauri/resources/frontend
+backend_ldflags='-s -w'
+if [[ "$target_triple" == *-windows-* ]]; then
+  # The backend is owned by the desktop app; compiling it as a GUI subsystem
+  # executable prevents Windows from creating a visible CMD window at startup.
+  backend_ldflags+=' -H=windowsgui'
+fi
 (
   cd backend
-  CGO_ENABLED=0 "$go_bin" build -trimpath -ldflags='-s -w' \
+  CGO_ENABLED=0 "$go_bin" build -trimpath -ldflags="$backend_ldflags" \
     -o "../$sidecar" \
     ./cmd/specrelay
 )

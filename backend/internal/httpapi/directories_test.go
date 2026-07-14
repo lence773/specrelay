@@ -41,6 +41,22 @@ func TestDirectoriesListsOnlyDirectories(t *testing.T) {
 	if listing.ParentPath != filepath.Dir(root) {
 		t.Fatalf("parentPath = %q, want %q", listing.ParentPath, filepath.Dir(root))
 	}
+	if len(listing.Roots) == 0 {
+		t.Fatal("roots must include at least one selectable filesystem root")
+	}
+}
+
+func TestDirectoryRootsAreAccessibleDirectories(t *testing.T) {
+	roots := directoryRoots()
+	if len(roots) == 0 {
+		t.Fatal("expected at least one filesystem root")
+	}
+	for _, root := range roots {
+		info, err := os.Stat(root.Path)
+		if err != nil || !info.IsDir() {
+			t.Fatalf("root %#v is not an accessible directory: %v", root, err)
+		}
+	}
 }
 
 func TestDirectoriesRejectsMissingPath(t *testing.T) {

@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -176,7 +177,27 @@ type directoryEntry struct {
 type directoryListing struct {
 	Path        string           `json:"path"`
 	ParentPath  string           `json:"parentPath,omitempty"`
+	Roots       []directoryEntry `json:"roots"`
 	Directories []directoryEntry `json:"directories"`
+}
+
+// directoryRoots exposes every selectable filesystem root. On Windows this
+// means all mounted drive letters rather than only the drive containing the
+// user's home directory, so the project picker can reach D:, E:, and other
+// local volumes directly.
+func directoryRoots() []directoryEntry {
+	if runtime.GOOS == "windows" {
+		roots := make([]directoryEntry, 0, 4)
+		for letter := 'A'; letter <= 'Z'; letter++ {
+			path := fmt.Sprintf("%c:\\", letter)
+			if info, err := os.Stat(path); err == nil && info.IsDir() {
+				roots = append(roots, directoryEntry{Name: fmt.Sprintf("%c:", letter), Path: path})
+			}
+		}
+		return roots
+	}
+	root := string(filepath.Separator)
+	return []directoryEntry{{Name: root, Path: root}}
 }
 
 func (s *Server) directories(w http.ResponseWriter, r *http.Request) {
@@ -229,7 +250,7 @@ func (s *Server) directories(w http.ResponseWriter, r *http.Request) {
 	if parent == real {
 		parent = ""
 	}
-	writeJSON(w, http.StatusOK, directoryListing{Path: real, ParentPath: parent, Directories: directories})
+	writeJSON(w, http.StatusOK, directoryListing{Path: real, ParentPath: parent, Roots: directoryRoots(), Directories: directories})
 }
 
 func (s *Server) projects(w http.ResponseWriter, r *http.Request) {

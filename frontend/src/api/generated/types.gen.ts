@@ -45,6 +45,7 @@ export type DirectoryEntry = {
 export type DirectoryListing = {
     path: string;
     parentPath?: string;
+    roots: Array<DirectoryEntry>;
     directories: Array<DirectoryEntry>;
 };
 
