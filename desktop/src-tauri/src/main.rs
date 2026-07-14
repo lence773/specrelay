@@ -118,7 +118,7 @@ fn start(app: &tauri::App, window: &WebviewWindow) -> Result<(), String> {
     app.manage(BackendState(Mutex::new(Some(child))));
 
     if let Err(error) = wait_for_backend(api_port) {
-        stop_backend(app);
+        stop_backend(app.handle());
         return Err(error);
     }
 
