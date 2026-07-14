@@ -112,11 +112,14 @@ export type IntakeStatus = 'open' | 'planning' | 'planned' | 'closed' | 'plan_fa
 
 export type IntakeInput = {
     kind: 'requirement' | 'feedback';
+    /**
+     * Required when kind is feedback. Must directly reference a requirement in the same project; feedback cannot be nested under feedback.
+     */
     parentIntakeId?: string | null;
     title: string;
     body: string;
     /**
-     * Optional provider override only for plan generation automatically queued when this request creates a requirement with project automation enabled. When omitted, the queued job carries no override and uses ProjectSettings.agentProvider on the server. It does not change the project default.
+     * Optional provider override only for plan generation automatically queued when this request creates a requirement or feedback with project automation enabled. When omitted, the queued job carries no override and uses ProjectSettings.agentProvider on the server. It does not change the project default.
      */
     provider?: CliProvider;
 };
@@ -263,6 +266,18 @@ export type Event = {
         [key: string]: unknown;
     };
     occurredAt: string;
+};
+
+export type EventPage = {
+    /**
+     * Visible events ordered from newest to oldest
+     */
+    items: Array<Event>;
+    hasMore: boolean;
+    /**
+     * Pass this exclusive cursor as before to load the next older page; null when no older page remains
+     */
+    nextBefore: number | null;
 };
 
 export type AsyncResponse = {
@@ -1153,14 +1168,25 @@ export type RotateMcpTokenResponse = RotateMcpTokenResponses[keyof RotateMcpToke
 export type ListEventsData = {
     body?: never;
     path?: never;
-    query?: {
-        projectId?: string;
-        after?: number;
+    query: {
+        projectId: string;
+        /**
+         * Exclusive event ID cursor; omit for the newest page
+         */
+        before?: number;
+        /**
+         * Maximum number of visible events to return
+         */
+        limit?: number;
     };
     url: '/events';
 };
 
 export type ListEventsErrors = {
+    /**
+     * Error response
+     */
+    400: Error;
     /**
      * Error response
      */
@@ -1171,9 +1197,9 @@ export type ListEventsError = ListEventsErrors[keyof ListEventsErrors];
 
 export type ListEventsResponses = {
     /**
-     * Events
+     * Event history page ordered from newest to oldest
      */
-    200: Array<Event>;
+    200: EventPage;
 };
 
 export type ListEventsResponse = ListEventsResponses[keyof ListEventsResponses];
@@ -1181,16 +1207,27 @@ export type ListEventsResponse = ListEventsResponses[keyof ListEventsResponses];
 export type StreamEventsData = {
     body?: never;
     headers?: {
+        /**
+         * Exclusive SSE event ID supplied by a reconnecting client
+         */
         'Last-Event-ID'?: number;
     };
     path?: never;
     query?: {
         projectId?: string;
+        /**
+         * Exclusive event ID used for incremental recovery
+         */
+        after?: number;
     };
     url: '/events/stream';
 };
 
 export type StreamEventsErrors = {
+    /**
+     * Error response
+     */
+    400: Error;
     /**
      * Error response
      */
@@ -1201,7 +1238,7 @@ export type StreamEventsError = StreamEventsErrors[keyof StreamEventsErrors];
 
 export type StreamEventsResponses = {
     /**
-     * Server-sent Event records
+     * Server-sent Event records ordered from oldest to newest
      */
     200: string;
 };

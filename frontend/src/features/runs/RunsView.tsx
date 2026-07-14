@@ -65,10 +65,10 @@ export function RunsView({project}:{project:Project}){
   }
   const runningCount=useMemo(()=>items.filter(item=>item.status==='running'||item.status==='starting').length,[items])
 
-  return <div className="page runs-page">
+  return <div className="page runs-page runs-scroll-page">
     <section className="hero compact"><div><span className="eyebrow">本地执行监控</span><h1>CLI 运行</h1><p>实时查看本地 Codex、Claude 和最终验证命令的输出。执行不设置超时时间，可通过停止自动化、计划或任务手动终止。</p></div><span className={`live-label ${runningCount?'running':''}`}><i/>{runningCount?`${runningCount} 个正在运行`:'实时监控已连接'}</span></section>
-    <section className="runs-layout panel">
-      <aside className="run-list">
+    <section className="runs-layout panel runs-scroll-layout">
+      <aside className="run-list app-scroll-region">
         <header><strong>最近运行</strong><span>{items.length} 条</span></header>
         {runs.isLoading?<div className="run-list-message">正在加载运行记录…</div>:items.length===0?<Empty title="暂无 CLI 运行" body="生成计划、讨论需求或执行任务后，运行情况会显示在这里。"/>:items.map(item=>{
           const active=item.status==='running'||item.status==='starting'
@@ -81,13 +81,13 @@ export function RunsView({project}:{project:Project}){
           </button>
         })}
       </aside>
-      <div className="run-console">
+      <div className="run-console runs-scroll-console">
         {!run?<Empty title="选择一条运行记录" body="运行日志会在 CLI 执行期间每秒自动刷新。"/>:<>
           <header>
             <div><span className={`run-state ${run.status}`}><i/>{statusText[run.status]}</span><h2>{providerText[run.provider]}</h2><p>{run.commandSummary}</p></div>
             <div className="run-header-side"><dl><div><dt>进程</dt><dd>{run.pid??'—'}</dd></div><div><dt>退出码</dt><dd>{run.exitCode??'—'}</dd></div><div><dt>日志大小</dt><dd>{log.data?`${Math.ceil(log.data.sizeBytes/1024)} KB`:'—'}</dd></div></dl></div>
           </header>
-          <div ref={logRef} onScroll={onLogScroll} className="cli-log readable">{log.isLoading?<div className="terminal-empty">正在读取日志…</div>:log.error?<div className="terminal-empty error">日志读取失败：{log.error.message}</div>:!logContent?<div className="terminal-empty">CLI 已启动，正在等待输出…</div>:<>{hasOlderLogs&&<div className="log-pagination">{loadingOlder?'正在加载更早的 50 条日志…':olderError?<button type="button" onClick={()=>void loadOlder()}>加载失败，点击重试</button>:'向上滚动可加载更早的 50 条日志'}</div>}{terminalLines.map((line,index)=><div key={`${index}-${line.text.slice(0,32)}`} className={`terminal-line ${line.kind}`}><span className="terminal-marker">{line.marker??'·'}</span><span>{line.text}</span></div>)}</>}</div>
+          <div ref={logRef} onScroll={onLogScroll} className="cli-log readable app-scroll-region">{log.isLoading?<div className="terminal-empty">正在读取日志…</div>:log.error?<div className="terminal-empty error">日志读取失败：{log.error.message}</div>:!logContent?<div className="terminal-empty">CLI 已启动，正在等待输出…</div>:<>{hasOlderLogs&&<div className="log-pagination">{loadingOlder?'正在加载更早的 50 条日志…':olderError?<button type="button" onClick={()=>void loadOlder()}>加载失败，点击重试</button>:'向上滚动可加载更早的 50 条日志'}</div>}{terminalLines.map((line,index)=><div key={`${index}-${line.text.slice(0,32)}`} className={`terminal-line ${line.kind}`}><span className="terminal-marker">{line.marker??'·'}</span><span>{line.text}</span></div>)}</>}</div>
           <footer><Activity/><span>{run.status==='running'||run.status==='starting'?'正在运行，无超时限制；默认展示最新 50 条简略日志。':'运行已结束；向上滚动可按 50 条继续查看更早的简略日志。'}</span></footer>
         </>}
       </div>

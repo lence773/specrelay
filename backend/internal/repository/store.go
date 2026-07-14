@@ -278,10 +278,21 @@ func (s *Store) SetAutomation(ctx context.Context, id uuid.UUID, enabled bool, v
 				return domain.Project{}, err
 			}
 		}
-		// A stopped project must not keep a plan visually or semantically running.
-		// Returning it to ready preserves completed tasks and lets the user resume
-		// it manually or by enabling automation again.
-		planRows, queryErr := tx.Query(ctx, `UPDATE plans SET status='ready',updated_at=now(),version=version+1 WHERE project_id=$1 AND status IN ('running','validating') RETURNING id,version`, id)
+		// A task may have been left queued after its job failed before the task
+		// could start (for example, while waiting for the workspace lease). Those
+		// failed jobs are not in the cancellation query above. Reconcile every plan
+		// that still has queued/running work, even if legacy state incorrectly marked
+		// it ready or completed after later tasks were skipped. Returning it to ready
+		// preserves succeeded tasks and lets automation resume at the first unfinished
+		// task in order.
+		planRows, queryErr := tx.Query(ctx, `UPDATE plans p
+			SET status='ready',updated_at=now(),version=version+1
+			WHERE p.project_id=$1
+			  AND (p.status IN ('running','validating') OR EXISTS (
+				SELECT 1 FROM plan_tasks t
+				WHERE t.plan_id=p.id AND t.status IN ('queued','running')
+			  ))
+			RETURNING p.id,p.version`, id)
 		if queryErr != nil {
 			return domain.Project{}, queryErr
 		}
@@ -306,6 +317,36 @@ func (s *Store) SetAutomation(ctx context.Context, id uuid.UUID, enabled bool, v
 		for _, plan := range pausedPlans {
 			if _, err = insertEvent(ctx, tx, NewEvent{ProjectID: &id, Type: "plan.ready", AggregateType: "plan", AggregateID: plan.id, ResourceVersion: plan.version, Payload: mustJSON(map[string]any{"reason": "project automation stopped"})}); err != nil {
 				return domain.Project{}, err
+			}
+			rows, resetErr := tx.Query(ctx, `UPDATE plan_tasks
+				SET status='pending',started_at=NULL,finished_at=NULL,updated_at=now(),version=version+1
+				WHERE plan_id=$1 AND status IN ('queued','running')
+				RETURNING id,version`, plan.id)
+			if resetErr != nil {
+				return domain.Project{}, resetErr
+			}
+			type resetTask struct {
+				id      uuid.UUID
+				version int64
+			}
+			resetTasks := []resetTask{}
+			for rows.Next() {
+				var task resetTask
+				if err = rows.Scan(&task.id, &task.version); err != nil {
+					rows.Close()
+					return domain.Project{}, err
+				}
+				resetTasks = append(resetTasks, task)
+			}
+			if err = rows.Err(); err != nil {
+				rows.Close()
+				return domain.Project{}, err
+			}
+			rows.Close()
+			for _, task := range resetTasks {
+				if _, err = insertEvent(ctx, tx, NewEvent{ProjectID: &id, Type: "task.cancelled", AggregateType: "task", AggregateID: task.id, ResourceVersion: task.version, Payload: mustJSON(map[string]any{"reason": "project automation stopped"})}); err != nil {
+					return domain.Project{}, err
+				}
 			}
 		}
 
@@ -421,12 +462,16 @@ func (s *Store) UpdateProjectSettings(ctx context.Context, p domain.ProjectSetti
 }
 
 func (s *Store) CreateIntake(ctx context.Context, p CreateIntakeParams) (domain.Intake, *domain.Job, error) {
+	p.Kind = strings.TrimSpace(p.Kind)
 	id := uuid.New()
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
 		return domain.Intake{}, nil, err
 	}
 	defer tx.Rollback(ctx)
+	if err = validateIntakeParent(ctx, tx, p); err != nil {
+		return domain.Intake{}, nil, err
+	}
 	if len(p.ConfigSnapshot) == 0 {
 		p.ConfigSnapshot = json.RawMessage(`{}`)
 	}
@@ -461,6 +506,39 @@ func (s *Store) CreateIntake(ctx context.Context, p CreateIntakeParams) (domain.
 	}
 	return out, job, nil
 }
+
+func validateIntakeParent(ctx context.Context, tx pgx.Tx, p CreateIntakeParams) error {
+	switch p.Kind {
+	case "requirement":
+		if p.ParentIntakeID != nil {
+			return errors.New("a requirement cannot have a parent intake")
+		}
+		return nil
+	case "feedback":
+		if p.ParentIntakeID == nil {
+			return errors.New("feedback must be linked to a requirement")
+		}
+		var projectID uuid.UUID
+		var kind string
+		err := tx.QueryRow(ctx, `SELECT project_id,kind FROM intakes WHERE id=$1`, *p.ParentIntakeID).Scan(&projectID, &kind)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return errors.New("feedback parent requirement was not found")
+		}
+		if err != nil {
+			return err
+		}
+		if projectID != p.ProjectID {
+			return errors.New("feedback parent requirement belongs to another project")
+		}
+		if kind != "requirement" {
+			return errors.New("feedback must be linked directly to a requirement")
+		}
+		return nil
+	default:
+		return fmt.Errorf("unsupported intake kind %q", p.Kind)
+	}
+}
+
 func scanIntake(row pgx.Row) (domain.Intake, error) {
 	var i domain.Intake
 	err := row.Scan(&i.ID, &i.ProjectID, &i.Kind, &i.ParentIntakeID, &i.Title, &i.Body, &i.Status, &i.ConfigSnapshot, &i.CreatedAt, &i.UpdatedAt, &i.Version)
@@ -516,9 +594,20 @@ func (s *Store) QueuePlanGeneration(ctx context.Context, intakeID uuid.UUID, ver
 	defer tx.Rollback(ctx)
 	var projectID uuid.UUID
 	var nextVersion int64
-	err = tx.QueryRow(ctx, `UPDATE intakes SET status='planning',updated_at=now(),version=version+1 WHERE id=$1 AND version=$2 RETURNING project_id,version`, intakeID, version).Scan(&projectID, &nextVersion)
+	err = tx.QueryRow(ctx, `UPDATE intakes SET status='planning',updated_at=now(),version=version+1 WHERE id=$1 AND version=$2 AND status IN ('open','plan_failed') RETURNING project_id,version`, intakeID, version).Scan(&projectID, &nextVersion)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return domain.Job{}, s.versionOrNotFound(ctx, tx, "intakes", intakeID)
+		var currentVersion int64
+		checkErr := tx.QueryRow(ctx, `SELECT version FROM intakes WHERE id=$1`, intakeID).Scan(&currentVersion)
+		if errors.Is(checkErr, pgx.ErrNoRows) {
+			return domain.Job{}, domain.ErrNotFound
+		}
+		if checkErr != nil {
+			return domain.Job{}, checkErr
+		}
+		if currentVersion != version {
+			return domain.Job{}, domain.ErrVersionConflict
+		}
+		return domain.Job{}, domain.ErrInvalidTransition
 	}
 	if err != nil {
 		return domain.Job{}, err
@@ -551,6 +640,23 @@ func (s *Store) GetPlan(ctx context.Context, id uuid.UUID) (domain.Plan, error) 
 	p, err := scanPlan(s.Pool.QueryRow(ctx, `SELECT id,project_id,intake_id,title,spec,markdown,status,config_snapshot,created_at,updated_at,version FROM plans WHERE id=$1`, id))
 	return p, mapNotFound(err)
 }
+func (s *Store) ListPlansForIntake(ctx context.Context, intakeID uuid.UUID) ([]domain.Plan, error) {
+	rows, err := s.Pool.Query(ctx, `SELECT id,project_id,intake_id,title,spec,markdown,status,config_snapshot,created_at,updated_at,version FROM plans WHERE intake_id=$1 ORDER BY created_at DESC`, intakeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []domain.Plan{}
+	for rows.Next() {
+		p, err := scanPlan(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, p)
+	}
+	return out, rows.Err()
+}
+
 func (s *Store) ListPlans(ctx context.Context, projectID uuid.UUID) ([]domain.Plan, error) {
 	rows, err := s.Pool.Query(ctx, `SELECT id,project_id,intake_id,title,spec,markdown,status,config_snapshot,created_at,updated_at,version FROM plans WHERE project_id=$1 ORDER BY created_at DESC`, projectID)
 	if err != nil {
@@ -593,22 +699,69 @@ func (s *Store) GetTask(ctx context.Context, id uuid.UUID) (domain.PlanTask, err
 	return t, mapNotFound(err)
 }
 
+type EventPage struct {
+	Items      []domain.Event `json:"items"`
+	HasMore    bool           `json:"hasMore"`
+	NextBefore *int64         `json:"nextBefore,omitempty"`
+}
+
+// ListEventPage returns a project's visible events from newest to oldest. The
+// before cursor is exclusive and should be the NextBefore value from the
+// previous page.
+func (s *Store) ListEventPage(ctx context.Context, projectID uuid.UUID, before *int64, limit int) (EventPage, error) {
+	if limit <= 0 || limit > 1000 {
+		limit = 10
+	}
+	query := `SELECT id,project_id,event_type,aggregate_type,aggregate_id,resource_version,payload,occurred_at
+		FROM events
+		WHERE project_id=$1 AND event_type <> 'agent.output'`
+	args := []any{projectID}
+	if before != nil {
+		query += ` AND id<$2`
+		args = append(args, *before)
+	}
+	query += ` ORDER BY id DESC LIMIT ` + fmt.Sprint(limit+1)
+	rows, err := s.Pool.Query(ctx, query, args...)
+	if err != nil {
+		return EventPage{}, err
+	}
+	defer rows.Close()
+	items, err := scanEvents(rows)
+	if err != nil {
+		return EventPage{}, err
+	}
+	page := EventPage{Items: items}
+	if len(page.Items) > limit {
+		page.Items = page.Items[:limit]
+		page.HasMore = true
+		nextBefore := page.Items[len(page.Items)-1].ID
+		page.NextBefore = &nextBefore
+	}
+	return page, nil
+}
+
+// ListEvents returns visible events after an exclusive SSE cursor in ascending
+// ID order.
 func (s *Store) ListEvents(ctx context.Context, projectID *uuid.UUID, after int64, limit int) ([]domain.Event, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 200
 	}
-	query := `SELECT id,project_id,event_type,aggregate_type,aggregate_id,resource_version,payload,occurred_at FROM events WHERE id>$1`
+	query := `SELECT id,project_id,event_type,aggregate_type,aggregate_id,resource_version,payload,occurred_at FROM events WHERE id>$1 AND event_type <> 'agent.output'`
 	args := []any{after}
 	if projectID != nil {
 		query += ` AND project_id=$2`
 		args = append(args, *projectID)
 	}
-	query += ` ORDER BY id LIMIT ` + fmt.Sprint(limit)
+	query += ` ORDER BY id ASC LIMIT ` + fmt.Sprint(limit)
 	rows, err := s.Pool.Query(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
+	return scanEvents(rows)
+}
+
+func scanEvents(rows pgx.Rows) ([]domain.Event, error) {
 	out := []domain.Event{}
 	for rows.Next() {
 		var e domain.Event
@@ -653,6 +806,9 @@ func projectMaxAttempts(ctx context.Context, tx pgx.Tx, projectID uuid.UUID) (in
 }
 
 func insertEvent(ctx context.Context, tx pgx.Tx, p NewEvent) (int64, error) {
+	if p.Type == "agent.output" {
+		return 0, nil
+	}
 	if len(p.Payload) == 0 {
 		p.Payload = json.RawMessage(`{}`)
 	}

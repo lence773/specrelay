@@ -145,7 +145,7 @@ var ErrNotFound = errors.New("resource not found")
 var ErrInvalidTransition = errors.New("invalid state transition")
 var transitions = map[string]map[string]map[string]bool{
 	"intake": {"open": {"planning": true, "closed": true}, "planning": {"planned": true, "plan_failed": true, "open": true}, "planned": {"closed": true}, "plan_failed": {"planning": true, "closed": true}},
-	"plan":   {"generating": {"ready": true, "blocked": true, "cancelled": true}, "ready": {"running": true, "cancelled": true}, "running": {"validating": true, "blocked": true, "cancelled": true}, "validating": {"completed": true, "blocked": true, "cancelled": true}, "blocked": {"ready": true, "running": true, "cancelled": true}},
+	"plan":   {"generating": {"ready": true, "blocked": true, "cancelled": true}, "ready": {"running": true, "cancelled": true}, "running": {"validating": true, "completed": true, "blocked": true, "cancelled": true}, "validating": {"completed": true, "blocked": true, "cancelled": true}, "blocked": {"ready": true, "running": true, "cancelled": true}},
 	"task":   {"pending": {"queued": true, "cancelled": true}, "queued": {"running": true, "pending": true, "cancelled": true}, "running": {"succeeded": true, "failed": true, "cancelled": true, "pending": true}, "failed": {"queued": true, "cancelled": true}, "cancelled": {"queued": true, "pending": true}},
 	"job":    {"queued": {"leased": true, "cancelled": true}, "retry_wait": {"queued": true, "cancelled": true}, "leased": {"running": true, "queued": true, "cancelled": true}, "running": {"succeeded": true, "retry_wait": true, "failed": true, "cancelled": true}},
 }

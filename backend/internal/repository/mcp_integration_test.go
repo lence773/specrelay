@@ -88,11 +88,20 @@ func TestRESTAndMCPShareApplicationStateAndEvents(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	restSettingsBefore, err := store.GetProjectSettings(ctx, restProject.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 	restIntake := createRESTIntake(t, httpServer.URL, restProject.ID.String(), "claude")
 	if restIntake.Job == nil {
 		t.Fatal("REST provider-selected intake did not queue planning")
 	}
 	assertPayloadProvider(t, restIntake.Job.Payload, "claude", false)
+	restSettingsAfter, err := store.GetProjectSettings(ctx, restProject.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertProviderSettingsUnchanged(t, restSettingsBefore, restSettingsAfter)
 
 	client := mcp.NewClient(&mcp.Implementation{Name: "specrelay-integration-test", Version: "1.0.0"}, nil)
 	httpClient := &http.Client{Transport: bearerTransport{base: http.DefaultTransport, token: testMCPToken}}
@@ -112,6 +121,10 @@ func TestRESTAndMCPShareApplicationStateAndEvents(t *testing.T) {
 		"workspacePath": mcpWorkspace,
 	})
 	assertProjectPersistence(t, store, created, "MCP project")
+	mcpSettingsBefore, err := store.GetProjectSettings(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	started := callToolData[domain.Project](t, ctx, session, "automation_start", map[string]any{
 		"projectId": created.ID.String(),
@@ -153,6 +166,22 @@ func TestRESTAndMCPShareApplicationStateAndEvents(t *testing.T) {
 	}
 	mcpPlanJob := callToolData[domain.Job](t, ctx, session, "plan_run", map[string]any{"planId": plan.ID.String(), "version": plan.Version})
 	assertPayloadProvider(t, mcpPlanJob.Payload, "", true)
+	persistedPlan, err := store.GetPlan(ctx, plan.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var planSnapshot map[string]any
+	if err = json.Unmarshal(persistedPlan.ConfigSnapshot, &planSnapshot); err != nil {
+		t.Fatal(err)
+	}
+	if provider, ok := planSnapshot["executionAgentProvider"]; ok {
+		t.Fatalf("MCP default run retained stale plan provider %v in %s", provider, persistedPlan.ConfigSnapshot)
+	}
+	mcpSettingsAfter, err := store.GetProjectSettings(ctx, created.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertProviderSettingsUnchanged(t, mcpSettingsBefore, mcpSettingsAfter)
 
 	stopped := callToolData[domain.Project](t, ctx, session, "automation_stop", map[string]any{
 		"projectId": created.ID.String(),
@@ -182,6 +211,123 @@ func TestRESTAndMCPShareApplicationStateAndEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 	assertEventTypes(t, events, "project.created", "project.automation_started", "intake.created", "project.automation_stopped", "intake.plan_cancelled")
+}
+
+func TestFinalValidationUsesValidationProviderAndCommand(t *testing.T) {
+	databaseURL := os.Getenv("TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	if err = migrations.Run(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, `TRUNCATE access_tokens,agent_runs,events,workspace_leases,jobs,plan_tasks,plans,attachments,intakes,project_settings,projects RESTART IDENTITY CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+
+	store := repository.New(pool)
+	dataDir := t.TempDir()
+	service := app.New(store, agent.NewRunner(), dataDir, 30*time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	workspace := t.TempDir()
+	project, err := store.CreateProject(ctx, repository.CreateProjectParams{Name: "Validation provider", WorkspacePath: workspace, NormalizedWorkspace: workspace})
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings, err := store.GetProjectSettings(ctx, project.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	validationMarker := filepath.Join(dataDir, "validation-ran")
+	codexMarker := filepath.Join(dataDir, "codex-ran")
+	claudeMarker := filepath.Join(dataDir, "claude-ran")
+	codexCommand := filepath.Join(dataDir, "codex-command")
+	claudeCommand := filepath.Join(dataDir, "claude-command")
+	if err = os.WriteFile(codexCommand, []byte("#!/bin/sh\nprintf called > \""+codexMarker+"\"\nexit 99\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(claudeCommand, []byte("#!/bin/sh\nprintf called > \""+claudeMarker+"\"\nexit 99\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	settings.AgentProvider = agent.ProviderClaude
+	settings.CodexCommand = codexCommand
+	settings.CodexArgs = json.RawMessage(`[]`)
+	settings.ClaudeCommand = claudeCommand
+	settings.ClaudeArgs = json.RawMessage(`[]`)
+	settings.ValidationCommand = "printf validation > \"" + validationMarker + "\""
+	settings, err = store.UpdateProjectSettings(ctx, settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err = store.SetAutomation(ctx, project.ID, true, project.Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	intake, generationJob, err := store.CreateIntake(ctx, repository.CreateIntakeParams{ProjectID: project.ID, Kind: "requirement", Title: "Validate", Body: "Run final validation", ConfigSnapshot: json.RawMessage(`{}`), QueuePlan: true})
+	if err != nil || generationJob == nil {
+		t.Fatalf("create validation fixture: job=%v err=%v", generationJob, err)
+	}
+	if _, err = pool.Exec(ctx, `UPDATE jobs SET status='cancelled' WHERE id=$1`, generationJob.ID); err != nil {
+		t.Fatal(err)
+	}
+	spec := planspec.Spec{Title: "Validation plan", Summary: "Exercise final validation", Tasks: []planspec.Task{{Title: "Implement", Scope: []string{"backend"}, Acceptance: []string{"passes"}}}, FinalValidation: []string{"validation command passes"}}
+	plan, tasks, err := store.SaveGeneratedPlan(ctx, intake, spec, planspec.Render(spec))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) != 2 || tasks[1].Title != "Final validation" {
+		t.Fatalf("tasks=%+v", tasks)
+	}
+	firstJob, err := store.QueuePlan(repository.WithExecutionProvider(ctx, agent.ProviderCodex), plan.ID, plan.Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if firstJob.AggregateID != tasks[0].ID {
+		t.Fatalf("first job=%+v", firstJob)
+	}
+	firstTask, err := store.StartTask(ctx, tasks[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = store.FinishTask(ctx, firstTask, "", true, "done"); err != nil {
+		t.Fatal(err)
+	}
+
+	validationJob := domain.Job{}
+	if err = pool.QueryRow(ctx, `SELECT id,project_id,job_type,aggregate_type,aggregate_id,payload,attempt,max_attempts FROM jobs WHERE aggregate_id=$1 AND status='queued'`, tasks[1].ID).Scan(&validationJob.ID, &validationJob.ProjectID, &validationJob.Type, &validationJob.AggregateType, &validationJob.AggregateID, &validationJob.Payload, &validationJob.Attempt, &validationJob.MaxAttempts); err != nil {
+		t.Fatal(err)
+	}
+	if err = service.ExecuteJob(ctx, "validation-worker", validationJob); err != nil {
+		t.Fatal(err)
+	}
+	content, err := os.ReadFile(validationMarker)
+	if err != nil || string(content) != "validation" {
+		t.Fatalf("validation marker=%q err=%v", content, err)
+	}
+	for provider, markerPath := range map[string]string{agent.ProviderCodex: codexMarker, agent.ProviderClaude: claudeMarker} {
+		if _, statErr := os.Stat(markerPath); !os.IsNotExist(statErr) {
+			t.Fatalf("final validation invoked %s command: %v", provider, statErr)
+		}
+	}
+	runs, err := store.ListAgentRuns(ctx, project.ID, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var validationRun *domain.AgentRun
+	for index := range runs {
+		if runs[index].TaskID != nil && *runs[index].TaskID == tasks[1].ID {
+			validationRun = &runs[index]
+			break
+		}
+	}
+	if validationRun == nil || validationRun.Provider != "validation" || validationRun.CommandSummary != settings.ValidationCommand || validationRun.Status != "succeeded" {
+		t.Fatalf("validation run=%+v", validationRun)
+	}
 }
 
 type intakeJobResponse struct {
@@ -220,6 +366,13 @@ func createRESTIntake(t *testing.T, baseURL, projectID, provider string) intakeJ
 		t.Fatal(err)
 	}
 	return result
+}
+
+func assertProviderSettingsUnchanged(t *testing.T, before, after domain.ProjectSettings) {
+	t.Helper()
+	if after.AgentProvider != before.AgentProvider || after.Version != before.Version {
+		t.Fatalf("project provider settings changed: before provider=%q version=%d, after provider=%q version=%d", before.AgentProvider, before.Version, after.AgentProvider, after.Version)
+	}
 }
 
 func assertPayloadProvider(t *testing.T, raw json.RawMessage, provider string, requested bool) {

@@ -667,8 +667,77 @@ func (s *Server) rotateMCPToken(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusCreated, map[string]string{"token": token})
 }
 
+const (
+	defaultEventPageLimit = 10
+	maxEventPageLimit     = 1000
+)
+
+type eventPageResponse struct {
+	Items      []domain.Event `json:"items"`
+	HasMore    bool           `json:"hasMore"`
+	NextBefore *int64         `json:"nextBefore"`
+}
+
 func (s *Server) eventHistory(w http.ResponseWriter, r *http.Request) {
-	after, _ := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64)
+	query := r.URL.Query()
+	rawProjectID := query.Get("projectId")
+	projectID, err := uuid.Parse(rawProjectID)
+	if err != nil {
+		message := "projectId must be a UUID"
+		if rawProjectID == "" {
+			message = "projectId is required"
+		}
+		writeError(w, r, http.StatusBadRequest, "invalid_project_id", message, nil)
+		return
+	}
+
+	var before *int64
+	if query.Has("before") {
+		value, parseErr := strconv.ParseInt(query.Get("before"), 10, 64)
+		if parseErr != nil || value < 1 {
+			writeError(w, r, http.StatusBadRequest, "invalid_before_cursor", "before must be a positive event ID", nil)
+			return
+		}
+		before = &value
+	}
+
+	limit := defaultEventPageLimit
+	if query.Has("limit") {
+		value, parseErr := strconv.Atoi(query.Get("limit"))
+		if parseErr != nil || value < 1 || value > maxEventPageLimit {
+			writeError(w, r, http.StatusBadRequest, "invalid_limit", "limit must be between 1 and 1000", nil)
+			return
+		}
+		limit = value
+	}
+
+	page, err := s.Store.ListEventPage(r.Context(), projectID, before, limit)
+	if err != nil {
+		respond(w, r, nil, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, eventPageResponse{Items: page.Items, HasMore: page.HasMore, NextBefore: page.NextBefore})
+}
+func (s *Server) eventStream(w http.ResponseWriter, r *http.Request) {
+	after := int64(0)
+	if raw := r.Header.Get("Last-Event-ID"); raw != "" {
+		value, err := strconv.ParseInt(raw, 10, 64)
+		if err != nil || value < 0 {
+			writeError(w, r, http.StatusBadRequest, "invalid_last_event_id", "Last-Event-ID must be a non-negative event ID", nil)
+			return
+		}
+		after = value
+	}
+	if query := r.URL.Query(); query.Has("after") {
+		value, err := strconv.ParseInt(query.Get("after"), 10, 64)
+		if err != nil || value < 0 {
+			writeError(w, r, http.StatusBadRequest, "invalid_after_cursor", "after must be a non-negative event ID", nil)
+			return
+		}
+		if value > after {
+			after = value
+		}
+	}
 	var projectID *uuid.UUID
 	if raw := r.URL.Query().Get("projectId"); raw != "" {
 		id, err := uuid.Parse(raw)
@@ -678,27 +747,10 @@ func (s *Server) eventHistory(w http.ResponseWriter, r *http.Request) {
 		}
 		projectID = &id
 	}
-	items, err := s.Store.ListEvents(r.Context(), projectID, after, 500)
-	respond(w, r, items, err)
-}
-func (s *Server) eventStream(w http.ResponseWriter, r *http.Request) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {
 		writeError(w, r, http.StatusInternalServerError, "streaming_unsupported", "Streaming is unavailable", nil)
 		return
-	}
-	after, _ := strconv.ParseInt(r.Header.Get("Last-Event-ID"), 10, 64)
-	if q, _ := strconv.ParseInt(r.URL.Query().Get("after"), 10, 64); q > after {
-		after = q
-	}
-	var projectID *uuid.UUID
-	if raw := r.URL.Query().Get("projectId"); raw != "" {
-		id, err := uuid.Parse(raw)
-		if err != nil {
-			writeError(w, r, http.StatusBadRequest, "invalid_project_id", "projectId must be a UUID", nil)
-			return
-		}
-		projectID = &id
 	}
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")

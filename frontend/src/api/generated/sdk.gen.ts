@@ -367,7 +367,10 @@ export const rotateMcpToken = <ThrowOnError extends boolean = false>(options?: O
     ...options
 });
 
-export const listEvents = <ThrowOnError extends boolean = false>(options?: Options<ListEventsData, ThrowOnError>): RequestResult<ListEventsResponses, ListEventsErrors, ThrowOnError> => (options?.client ?? client).get<ListEventsResponses, ListEventsErrors, ThrowOnError>({
+/**
+ * Returns one project event-history page from newest to oldest. The before cursor is exclusive and must be copied from the preceding page's nextBefore value.
+ */
+export const listEvents = <ThrowOnError extends boolean = false>(options: Options<ListEventsData, ThrowOnError>): RequestResult<ListEventsResponses, ListEventsErrors, ThrowOnError> => (options.client ?? client).get<ListEventsResponses, ListEventsErrors, ThrowOnError>({
     security: [{
             in: 'cookie',
             name: 'specrelay_session',
@@ -377,6 +380,9 @@ export const listEvents = <ThrowOnError extends boolean = false>(options?: Optio
     ...options
 });
 
+/**
+ * Replays visible events strictly after the greater of Last-Event-ID and after, then continues streaming them from oldest to newest. agent.output records are never emitted.
+ */
 export const streamEvents = <ThrowOnError extends boolean = false>(options?: Options<StreamEventsData, ThrowOnError, StreamEventsResponse>): Promise<ServerSentEventsResult<StreamEventsResponses>> => (options?.client ?? client).sse.get<StreamEventsResponses, StreamEventsErrors, ThrowOnError>({
     security: [{
             in: 'cookie',

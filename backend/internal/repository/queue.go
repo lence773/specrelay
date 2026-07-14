@@ -19,12 +19,85 @@ func scanJob(row pgx.Row) (domain.Job, error) {
 	return j, err
 }
 func (s *Store) ClaimJob(ctx context.Context, workerID string, lease time.Duration) (domain.Job, error) {
-	return scanJob(s.Pool.QueryRow(ctx, `WITH candidate AS (SELECT j.id FROM jobs j JOIN projects p ON p.id=j.project_id WHERE j.status IN ('queued','retry_wait') AND j.run_after<=now() AND p.automation_enabled=true ORDER BY j.priority ASC,j.created_at ASC FOR UPDATE OF j SKIP LOCKED LIMIT 1) UPDATE jobs j SET status='leased',worker_id=$1,lease_expires_at=now()+$2::interval,attempt=attempt+1,updated_at=now(),version=version+1 FROM candidate WHERE j.id=candidate.id RETURNING j.id,j.project_id,j.job_type,j.aggregate_type,j.aggregate_id,j.payload,j.priority,j.status,j.run_after,coalesce(j.worker_id,''),j.lease_expires_at,j.attempt,j.max_attempts,coalesce(j.last_error,''),j.idempotency_key,j.created_at,j.updated_at,j.version`, workerID, lease.String()))
+	return scanJob(s.Pool.QueryRow(ctx, `
+		WITH candidate AS (
+			SELECT j.id
+			FROM jobs j
+			JOIN projects p ON p.id=j.project_id
+			LEFT JOIN plan_tasks task
+				ON j.job_type='task.execute' AND task.id=j.aggregate_id
+			WHERE j.status IN ('queued','retry_wait')
+				AND j.run_after<=now()
+				AND p.automation_enabled=true
+				-- Task jobs may only be claimed by the oldest active plan in
+				-- their project. Its subsequent tasks retain ownership even though
+				-- they are enqueued later than another plan's first task.
+				AND (
+					j.job_type<>'task.execute'
+					OR task.plan_id=(
+						SELECT owner.id
+						FROM plans owner
+						WHERE owner.project_id=j.project_id
+							AND owner.status IN ('running','validating')
+							AND EXISTS (
+								SELECT 1
+								FROM plan_tasks owner_task
+								WHERE owner_task.plan_id=owner.id
+									AND owner_task.status<>'succeeded'
+							)
+						ORDER BY owner.execution_started_at ASC NULLS LAST, owner.created_at ASC, owner.id ASC
+						LIMIT 1
+					)
+				)
+			ORDER BY j.priority ASC,j.created_at ASC
+			FOR UPDATE OF j SKIP LOCKED
+			LIMIT 1
+		)
+		UPDATE jobs j
+		SET status='leased',worker_id=$1,lease_expires_at=now()+$2::interval,
+			attempt=attempt+1,updated_at=now(),version=version+1
+		FROM candidate
+		WHERE j.id=candidate.id
+		RETURNING j.id,j.project_id,j.job_type,j.aggregate_type,j.aggregate_id,j.payload,
+			j.priority,j.status,j.run_after,coalesce(j.worker_id,''),j.lease_expires_at,
+			j.attempt,j.max_attempts,coalesce(j.last_error,''),j.idempotency_key,
+			j.created_at,j.updated_at,j.version`, workerID, lease.String()))
 }
 func (s *Store) MarkJobRunning(ctx context.Context, id uuid.UUID, workerID string) (domain.Job, error) {
 	j, err := scanJob(s.Pool.QueryRow(ctx, `UPDATE jobs SET status='running',updated_at=now(),version=version+1 WHERE id=$1 AND worker_id=$2 AND status='leased' RETURNING id,project_id,job_type,aggregate_type,aggregate_id,payload,priority,status,run_after,coalesce(worker_id,''),lease_expires_at,attempt,max_attempts,coalesce(last_error,''),idempotency_key,created_at,updated_at,version`, id, workerID))
 	return j, mapNotFound(err)
 }
+
+// DeferJobForWorkspace returns a job to the queue after it discovers that
+// another task currently owns the same workspace. ClaimJob increments attempts
+// before execution begins, so this method compensates for that claim: waiting
+// for a lock is not an execution attempt and must never exhaust max_attempts.
+func (s *Store) DeferJobForWorkspace(ctx context.Context, id uuid.UUID, workerID string, delay time.Duration) error {
+	if delay < 0 {
+		delay = 0
+	}
+	tx, err := s.Pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	tag, err := tx.Exec(ctx, `UPDATE jobs
+		SET status='queued',worker_id=NULL,lease_expires_at=NULL,
+			run_after=now()+$3::interval,attempt=GREATEST(attempt-1,0),
+			last_error='',updated_at=now(),version=version+1
+		WHERE id=$1 AND worker_id=$2 AND status IN ('leased','running')`, id, workerID, delay.String())
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	if _, err = tx.Exec(ctx, `SELECT pg_notify('specrelay_jobs',$1)`, id.String()); err != nil {
+		return err
+	}
+	return tx.Commit(ctx)
+}
+
 func (s *Store) CompleteJob(ctx context.Context, id uuid.UUID, workerID string) error {
 	tag, err := s.Pool.Exec(ctx, `UPDATE jobs SET status='succeeded',lease_expires_at=NULL,updated_at=now(),version=version+1 WHERE id=$1 AND worker_id=$2 AND status='running'`, id, workerID)
 	if err != nil {
@@ -99,6 +172,21 @@ func (s *Store) AcquireWorkspaceLease(ctx context.Context, projectID, jobID uuid
 	}
 	return nil
 }
+
+// RenewJobLease keeps an active job owned by its worker. Jobs that only read
+// the workspace (such as plan generation) do not need a workspace lease, but
+// still need their queue lease renewed while the CLI is running.
+func (s *Store) RenewJobLease(ctx context.Context, jobID uuid.UUID, workerID string, duration time.Duration) error {
+	tag, err := s.Pool.Exec(ctx, `UPDATE jobs SET lease_expires_at=now()+$3::interval,updated_at=now() WHERE id=$1 AND worker_id=$2 AND status IN ('leased','running')`, jobID, workerID, duration.String())
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return errors.New("job lease lost")
+	}
+	return nil
+}
+
 func (s *Store) RenewWorkspaceLease(ctx context.Context, jobID uuid.UUID, workerID string, duration time.Duration) error {
 	tag, err := s.Pool.Exec(ctx, `UPDATE workspace_leases SET heartbeat_at=now(),expires_at=now()+$3::interval,updated_at=now(),version=version+1 WHERE job_id=$1 AND worker_id=$2 AND expires_at>now()`, jobID, workerID, duration.String())
 	if err != nil {
@@ -107,8 +195,7 @@ func (s *Store) RenewWorkspaceLease(ctx context.Context, jobID uuid.UUID, worker
 	if tag.RowsAffected() == 0 {
 		return errors.New("workspace lease lost")
 	}
-	_, err = s.Pool.Exec(ctx, `UPDATE jobs SET lease_expires_at=now()+$3::interval,updated_at=now() WHERE id=$1 AND worker_id=$2 AND status IN ('leased','running')`, jobID, workerID, duration.String())
-	return err
+	return s.RenewJobLease(ctx, jobID, workerID, duration)
 }
 func (s *Store) ReleaseWorkspaceLease(ctx context.Context, jobID uuid.UUID, workerID string) error {
 	_, err := s.Pool.Exec(ctx, `DELETE FROM workspace_leases WHERE job_id=$1 AND worker_id=$2`, jobID, workerID)
@@ -214,9 +301,9 @@ func (s *Store) QueuePlanAutomatically(ctx context.Context, planID uuid.UUID) (d
 // corresponding task job. automatic limits the transition to ready plans so
 // automation never restarts a blocked plan without user action.
 func (s *Store) queuePlanTx(ctx context.Context, tx pgx.Tx, planID uuid.UUID, version int64, automatic bool) (domain.Job, error) {
-	planQuery := `UPDATE plans SET status='running',updated_at=now(),version=version+1 WHERE id=$1 AND version=$2 AND status IN ('ready','blocked') RETURNING project_id,version,config_snapshot`
+	planQuery := `UPDATE plans SET status='running',execution_started_at=now(),updated_at=now(),version=version+1 WHERE id=$1 AND version=$2 AND status IN ('ready','blocked') RETURNING project_id,version,config_snapshot`
 	if automatic {
-		planQuery = `UPDATE plans SET status='running',updated_at=now(),version=version+1 WHERE id=$1 AND version=$2 AND status='ready' RETURNING project_id,version,config_snapshot`
+		planQuery = `UPDATE plans SET status='running',execution_started_at=now(),updated_at=now(),version=version+1 WHERE id=$1 AND version=$2 AND status='ready' RETURNING project_id,version,config_snapshot`
 	}
 	var projectID uuid.UUID
 	var nextVersion int64
@@ -242,7 +329,21 @@ func (s *Store) queuePlanTx(ctx context.Context, tx pgx.Tx, planID uuid.UUID, ve
 	}
 	var taskID uuid.UUID
 	var taskVersion int64
-	err = tx.QueryRow(ctx, `UPDATE plan_tasks SET status='queued',updated_at=now(),version=version+1 WHERE id=(SELECT id FROM plan_tasks WHERE plan_id=$1 AND status IN ('pending','failed','cancelled') ORDER BY position LIMIT 1 FOR UPDATE) RETURNING id,version`, planID).Scan(&taskID, &taskVersion)
+	// A plan can only advance from its first unfinished task. In particular,
+	// never skip an earlier queued/running task merely because a later task is
+	// pending (for example while an automation stop/start is being reconciled).
+	err = tx.QueryRow(ctx, `WITH first_unfinished AS (
+		SELECT id FROM plan_tasks
+		WHERE plan_id=$1 AND status<>'succeeded'
+		ORDER BY position
+		LIMIT 1
+		FOR UPDATE
+	)
+	UPDATE plan_tasks t
+	SET status='queued',updated_at=now(),version=version+1
+	FROM first_unfinished f
+	WHERE t.id=f.id AND t.status IN ('pending','failed','cancelled')
+	RETURNING t.id,t.version`, planID).Scan(&taskID, &taskVersion)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Job{}, errors.New("plan has no runnable task")
 	}
@@ -293,7 +394,7 @@ func (s *Store) QueueTask(ctx context.Context, taskID uuid.UUID, version int64) 
 	}
 	var planVersion int64
 	planChanged := true
-	err = tx.QueryRow(ctx, `UPDATE plans SET status='running',updated_at=now(),version=version+1 WHERE id=$1 AND status IN ('ready','blocked') RETURNING version`, t.PlanID).Scan(&planVersion)
+	err = tx.QueryRow(ctx, `UPDATE plans SET status='running',execution_started_at=now(),updated_at=now(),version=version+1 WHERE id=$1 AND status IN ('ready','blocked') RETURNING version`, t.PlanID).Scan(&planVersion)
 	if errors.Is(err, pgx.ErrNoRows) {
 		planChanged = false
 		var status string
@@ -401,7 +502,21 @@ func (s *Store) FinishTask(ctx context.Context, t domain.PlanTask, sessionID str
 		}
 		var nextID uuid.UUID
 		var nextTaskVersion int64
-		err = tx.QueryRow(ctx, `UPDATE plan_tasks SET status='queued',updated_at=now(),version=version+1 WHERE id=(SELECT id FROM plan_tasks WHERE plan_id=$1 AND status='pending' ORDER BY position LIMIT 1 FOR UPDATE) RETURNING id,version`, t.PlanID).Scan(&nextID, &nextTaskVersion)
+		// Only the first unfinished task may be queued. Looking for the first
+		// pending task would skip an earlier queued/running/failed task and allow
+		// later tasks (including final validation) to execute out of order.
+		err = tx.QueryRow(ctx, `WITH first_unfinished AS (
+			SELECT id FROM plan_tasks
+			WHERE plan_id=$1 AND status<>'succeeded'
+			ORDER BY position
+			LIMIT 1
+			FOR UPDATE
+		)
+		UPDATE plan_tasks t
+		SET status='queued',updated_at=now(),version=version+1
+		FROM first_unfinished f
+		WHERE t.id=f.id AND t.status='pending'
+		RETURNING t.id,t.version`, t.PlanID).Scan(&nextID, &nextTaskVersion)
 		if err == nil {
 			maxAttempts, attemptsErr := projectMaxAttempts(ctx, tx, t.ProjectID)
 			if attemptsErr != nil {
@@ -415,25 +530,42 @@ func (s *Store) FinishTask(ctx context.Context, t domain.PlanTask, sessionID str
 				return err
 			}
 		} else if errors.Is(err, pgx.ErrNoRows) {
-			var planVersion int64
-			var intakeID uuid.UUID
-			err = tx.QueryRow(ctx, `UPDATE plans SET status='completed',updated_at=now(),version=version+1 WHERE id=$1 AND status='validating' RETURNING version,intake_id`, t.PlanID).Scan(&planVersion, &intakeID)
-			if errors.Is(err, pgx.ErrNoRows) {
-				return domain.ErrInvalidTransition
-			}
-			if err != nil {
+			var hasUnfinished bool
+			if err = tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM plan_tasks WHERE plan_id=$1 AND status<>'succeeded')`, t.PlanID).Scan(&hasUnfinished); err != nil {
 				return err
 			}
-			if _, err = insertEvent(ctx, tx, NewEvent{ProjectID: &t.ProjectID, Type: "plan.completed", AggregateType: "plan", AggregateID: t.PlanID, ResourceVersion: planVersion, Payload: json.RawMessage(`{}`)}); err != nil {
-				return err
+			if !hasUnfinished {
+				// A recovered plan can have already completed validation while it
+				// still says running after an interrupted or previously invalid
+				// completion transition.
+				// Once every task is succeeded, completing from either running or
+				// validating is safe and keeps a successful CLI execution from
+				// being rolled back.
+				if planStatus == "completed" {
+					return tx.Commit(ctx)
+				}
+				var planVersion int64
+				var intakeID uuid.UUID
+				err = tx.QueryRow(ctx, `UPDATE plans SET status='completed',updated_at=now(),version=version+1 WHERE id=$1 AND status IN ('running','validating') RETURNING version,intake_id`, t.PlanID).Scan(&planVersion, &intakeID)
+				if errors.Is(err, pgx.ErrNoRows) {
+					return domain.ErrInvalidTransition
+				}
+				if err != nil {
+					return err
+				}
+				if _, err = insertEvent(ctx, tx, NewEvent{ProjectID: &t.ProjectID, Type: "plan.completed", AggregateType: "plan", AggregateID: t.PlanID, ResourceVersion: planVersion, Payload: json.RawMessage(`{}`)}); err != nil {
+					return err
+				}
+				var intakeVersion int64
+				err = tx.QueryRow(ctx, `UPDATE intakes SET status='closed',updated_at=now(),version=version+1 WHERE id=$1 AND status='planned' RETURNING version`, intakeID).Scan(&intakeVersion)
+				if errors.Is(err, pgx.ErrNoRows) {
+					err = nil
+				} else if err == nil {
+					_, err = insertEvent(ctx, tx, NewEvent{ProjectID: &t.ProjectID, Type: "intake.closed", AggregateType: "intake", AggregateID: intakeID, ResourceVersion: intakeVersion, Payload: mustJSON(map[string]any{"planId": t.PlanID})})
+				}
 			}
-			var intakeVersion int64
-			err = tx.QueryRow(ctx, `UPDATE intakes SET status='closed',updated_at=now(),version=version+1 WHERE id=$1 AND status='planned' RETURNING version`, intakeID).Scan(&intakeVersion)
-			if errors.Is(err, pgx.ErrNoRows) {
-				err = nil
-			} else if err == nil {
-				_, err = insertEvent(ctx, tx, NewEvent{ProjectID: &t.ProjectID, Type: "intake.closed", AggregateType: "intake", AggregateID: intakeID, ResourceVersion: intakeVersion, Payload: mustJSON(map[string]any{"planId": t.PlanID})})
-			}
+		} else {
+			return err
 		}
 		if err != nil {
 			return err

@@ -97,14 +97,14 @@ func (r *Runner) Run(ctx context.Context, key string, inv Invocation) (Result, e
 	cmd.Dir = inv.Dir
 	cmd.Env = commandEnv(inv.Env)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return Result{}, err
-	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		return Result{}, err
-	}
+	// Give os/exec a shared writer rather than reading StdoutPipe and StderrPipe
+	// ourselves. Cmd.Wait waits for its configured writers to finish; with
+	// explicit pipes, calling Wait before both copies complete can close a pipe
+	// and lose the tail of fast CLI output (commonly stderr).
+	capture := &limitedCapture{limit: inv.MaxLogBytes}
+	writer := &streamCapture{log: logFile, capture: capture, onOutput: inv.OnOutput}
+	cmd.Stdout = writer
+	cmd.Stderr = writer
 	r.mu.Lock()
 	if _, exists := r.running[key]; exists {
 		r.mu.Unlock()
@@ -128,11 +128,6 @@ func (r *Runner) Run(ctx context.Context, key string, inv Invocation) (Result, e
 	if cancelledBeforeStart && cmd.Process != nil {
 		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
 	}
-	capture := &limitedCapture{limit: inv.MaxLogBytes}
-	writer := &streamCapture{log: logFile, capture: capture, onOutput: inv.OnOutput}
-	done := make(chan struct{}, 2)
-	go func() { _, _ = io.Copy(writer, stdout); done <- struct{}{} }()
-	go func() { _, _ = io.Copy(writer, stderr); done <- struct{}{} }()
 	wait := make(chan error, 1)
 	go func() { wait <- cmd.Wait() }()
 	var waitErr error
@@ -147,8 +142,6 @@ func (r *Runner) Run(ctx context.Context, key string, inv Invocation) (Result, e
 			waitErr = <-wait
 		}
 	}
-	<-done
-	<-done
 	result := Result{Output: capture.Bytes(), ExitCode: 0, Duration: time.Since(started), LogPath: inv.LogPath}
 	if cmd.ProcessState != nil {
 		result.ExitCode = cmd.ProcessState.ExitCode()

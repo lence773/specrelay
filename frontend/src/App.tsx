@@ -15,6 +15,8 @@ import { ProjectSidebar } from './features/projects/ProjectSidebar'
 import { SettingsView } from './features/settings/SettingsView'
 
 type Tab='overview'|'intakes'|'plans'|'runs'|'events'|'settings'
+const EVENT_PAGE_LIMIT=100
+
 const nav:[Tab,string,React.ReactNode][]=[
   ['overview','概览',<Dashboard/>],
   ['intakes','需求',<Inbox/>],
@@ -31,7 +33,7 @@ export function App(){
   const[selected,setSelected]=useState<string>()
   const[tab,setTab]=useState<Tab>('overview')
   const[createOpen,setCreateOpen]=useState(false)
-  const[liveEvents,setLiveEvents]=useState<EventRecord[]>([])
+  const[recentEvents,setRecentEvents]=useState<EventRecord[]>([])
 
   useEffect(()=>{
     const url=new URL(window.location.href)
@@ -49,9 +51,14 @@ export function App(){
   const project=projects.data?.find(p=>p.id===selected)
   const intakes=useQuery({queryKey:['intakes',selected],queryFn:()=>api.intakes(selected!),enabled:!!selected})
   const plans=useQuery({queryKey:['plans',selected],queryFn:()=>api.plans(selected!),enabled:!!selected})
-  const events=useQuery({queryKey:['events',selected],queryFn:()=>api.events(selected!),enabled:!!selected})
-  useEffect(()=>{setLiveEvents(events.data??[])},[events.data])
-  useEffect(()=>{if(!selected)return;return subscribe(selected,queryClient,event=>setLiveEvents(current=>[...current.filter(item=>item.id!==event.id),event].slice(-500)))},[selected,queryClient])
+  const eventPage=useQuery({queryKey:['events',selected],queryFn:()=>api.events(selected!,undefined,EVENT_PAGE_LIMIT),enabled:!!selected})
+  useEffect(()=>{setRecentEvents([])},[selected])
+  useEffect(()=>{if(eventPage.data)setRecentEvents(eventPage.data.items.filter(event=>event.type!=='agent.output'))},[eventPage.data])
+  useEffect(()=>{
+    if(!selected||!eventPage.isSuccess)return
+    const after=eventPage.data.items.find(event=>event.type!=='agent.output')?.id??0
+    return subscribe(selected,after,queryClient,event=>setRecentEvents(current=>[event,...current.filter(item=>item.id!==event.id)].slice(0,500)))
+  },[selected,eventPage.isSuccess,eventPage.data,queryClient])
   const automation=useMutation({mutationFn:(enabled:boolean)=>api.automation(project!,enabled),onSuccess:()=>queryClient.invalidateQueries({queryKey:['projects']})})
   const counts=useMemo(()=>({
     intakes:intakes.data?.filter(i=>i.status==='open'||i.status==='plan_failed').length??0,
@@ -63,17 +70,17 @@ export function App(){
 
   return <div className="app-shell">
     <ProjectSidebar projects={projects.data??[]} selected={selected} onSelect={id=>{setSelected(id);setTab('overview')}} onCreate={()=>setCreateOpen(true)}/>
-    <main>{project?<>
+    <main className={project?'workspace-main':undefined}>{project?<>
       <header className="topbar">
         <nav>{nav.map(([id,label,icon])=><button key={id} className={tab===id?'active':''} onClick={()=>setTab(id)}>{icon}<span>{label}</span>{id==='intakes'&&counts.intakes>0&&<b>{counts.intakes}</b>}{id==='plans'&&counts.plans>0&&<b>{counts.plans}</b>}</button>)}</nav>
         <button className={`automation ${project.automationEnabled?'running':''}`} disabled={automation.isPending} title={project.automationEnabled ? '停止后会取消排队中的自动任务' : '启动后会自动生成计划，并执行所有已就绪计划'} onClick={()=>automation.mutate(!project.automationEnabled)}>{project.automationEnabled?<><Stop/> 停止自动化</>:<><Play/> 启动自动化</>}</button>
       </header>
       <div className="content">
-        {tab==='overview'&&<Overview project={project} intakes={intakes.data??[]} plans={plans.data??[]} events={liveEvents} onNavigate={value=>setTab(value as Tab)}/>} 
+        {tab==='overview'&&<Overview project={project} intakes={intakes.data??[]} plans={plans.data??[]} events={recentEvents} onNavigate={value=>setTab(value as Tab)}/>}
         <div hidden={tab!=='intakes'}><IntakesView key={project.id} project={project} intakes={intakes.data??[]}/></div>
         {tab==='plans'&&<PlansView project={project} plans={plans.data??[]}/>} 
         {tab==='runs'&&<RunsView project={project}/>} 
-        {tab==='events'&&<EventsView events={liveEvents}/>} 
+        {tab==='events'&&<EventsView events={[...(eventPage.data?.items??[])].reverse()}/>}
         {tab==='settings'&&<SettingsView project={project}/>} 
       </div>
     </>:<div className="welcome"><Empty title="创建第一个项目" body="将 SpecRelay 绑定到可信的本地工作目录，配置智能体，然后把需求转化为经过验证的代码。" action={<button className="button primary" onClick={()=>setCreateOpen(true)}>创建项目</button>}/></div>}</main>

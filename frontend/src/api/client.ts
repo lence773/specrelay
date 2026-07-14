@@ -21,6 +21,7 @@ import {
   updateProjectSettings,
   uploadAttachment,
 } from './generated/sdk.gen'
+import type { EventPage } from './generated/types.gen'
 import type {
   APIError,
   AgentRun,
@@ -30,7 +31,6 @@ import type {
   CLIProvider,
   DirectoryListing,
   AsyncResponse,
-  EventRecord,
   Intake,
   IntakeInput,
   Plan,
@@ -75,6 +75,10 @@ async function getJSON<T>(path:string):Promise<T>{
   return body as T
 }
 
+function withProvider<T extends object>(input:T,provider?:CLIProvider):T&{provider?:CLIProvider}{
+  return provider===undefined?input:{...input,provider}
+}
+
 function summarizeProbe(response:CLIProbeResponse):CLIProbeSummary{
   // Keep the facade usable while the backend implementation moves from the
   // former single-provider response to the generated two-provider contract.
@@ -98,16 +102,16 @@ export const api={
   updateSettings:(settings:ProjectSettings)=>unwrap<ProjectSettings>(updateProjectSettings({path:{projectId:settings.projectId},body:settings})),
   automation:(project:Project,enabled:boolean)=>unwrap<Project>(setProjectAutomation({path:{projectId:project.id,action:enabled?'start':'stop'},body:{version:project.version}})),
   intakes:(projectId:UUID)=>unwrap<Intake[]>(listIntakes({path:{projectId}})),
-  createIntake:(projectId:UUID,input:IntakeInput)=>unwrap(createIntake({path:{projectId},body:input})),
-  discussRequirement:(projectId:UUID,input:RequirementDiscussionRequest)=>unwrap<RequirementDiscussionResult>(discussRequirement({path:{projectId},body:input})),
+  createIntake:(projectId:UUID,input:IntakeInput)=>{const{provider,...body}=input;return unwrap(createIntake({path:{projectId},body:withProvider(body,provider)}))},
+  discussRequirement:(projectId:UUID,input:RequirementDiscussionRequest)=>{const{provider,...body}=input;return unwrap<RequirementDiscussionResult>(discussRequirement({path:{projectId},body:withProvider(body,provider)}))},
   updateIntake:(intake:Intake)=>unwrap<Intake>(updateIntake({path:{intakeId:intake.id},body:{title:intake.title,body:intake.body,status:intake.status,version:intake.version}})),
   generatePlan:(intake:Intake,provider?:CLIProvider)=>unwrap<AsyncResponse>(generatePlan({path:{intakeId:intake.id},body:provider===undefined?{version:intake.version}:{version:intake.version,provider}})),
   upload:(intakeId:UUID,file:File)=>unwrap(uploadAttachment({path:{intakeId},body:{file}})),
   plans:(projectId:UUID)=>unwrap<Plan[]>(listPlans({path:{projectId}})),
   plan:(id:UUID)=>unwrap<{plan:Plan;tasks:PlanTask[]}>(getPlan({path:{planId:id}})),
-  runPlan:(plan:Plan,provider?:CLIProvider)=>unwrap<AsyncResponse>(runPlan({path:{planId:plan.id},body:provider===undefined?{version:plan.version}:{version:plan.version,provider}})),
-  runTask:(task:PlanTask,provider?:CLIProvider)=>unwrap<AsyncResponse>(runTask({path:{taskId:task.id,action:task.status==='failed'?'retry':'run'},body:provider===undefined?{version:task.version}:{version:task.version,provider}})),
-  events:(projectId:UUID,after=0)=>unwrap<EventRecord[]>(listEvents({query:{projectId,after}})),
+  runPlan:(plan:Plan,provider?:CLIProvider)=>unwrap<AsyncResponse>(runPlan({path:{planId:plan.id},body:withProvider({version:plan.version},provider)})),
+  runTask:(task:PlanTask,provider?:CLIProvider)=>unwrap<AsyncResponse>(runTask({path:{taskId:task.id,action:task.status==='failed'?'retry':'run'},body:withProvider({version:task.version},provider)})),
+  events:(projectId:UUID,before?:number,limit?:number)=>unwrap<EventPage>(listEvents({query:{projectId,before,limit}})),
   agentRuns:(projectId:UUID,limit=100)=>getJSON<AgentRun[]>(`/api/v1/projects/${encodeURIComponent(projectId)}/agent-runs?limit=${limit}`),
   agentRunLog:(runId:UUID,before?:number,limit=50)=>{const query=new URLSearchParams({limit:String(limit)});if(before!==undefined)query.set('before',String(before));return getJSON<AgentRunLog>(`/api/v1/agent-runs/${encodeURIComponent(runId)}/log?${query}`)},
   probe:(projectId:UUID)=>unwrap<CLIProbeResponse>(probeAgent({body:{projectId}})).then(summarizeProbe),

@@ -87,9 +87,8 @@ func (s *Service) DiscussRequirement(ctx context.Context, projectID uuid.UUID, i
 	inv := adapter.Discuss(command, args, project.WorkspacePath, prompt, 0, logPath)
 	inv.Env = allowedEnv(settings.AllowedEnv)
 	_ = s.Store.StartAgentRun(ctx, repository.AgentRunStart{ID: runID, ProjectID: project.ID, Provider: adapter.Name(), CommandSummary: command + "（需求讨论）", LogPath: logPath})
-	finishOutput := s.instrumentInvocation(&inv, project.ID, nil, runID, nil)
+	s.instrumentInvocation(&inv, runID)
 	result, runErr := s.Runner.Run(ctx, project.ID.String()+":discussion:"+runID.String(), inv)
-	finishOutput()
 	finishRun(s.Store, runID, result, runErr)
 	if runErr != nil {
 		return RequirementDiscussionResult{}, classifyRunError(result, runErr)

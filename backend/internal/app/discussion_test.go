@@ -8,7 +8,9 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
+	"github.com/google/uuid"
 	"github.com/lyming99/specrelay/backend/internal/agent"
 	"github.com/lyming99/specrelay/backend/internal/domain"
 )
@@ -50,6 +52,7 @@ func testProviderSettings() domain.ProjectSettings {
 		ClaudeCommand:     "/project/bin/claude",
 		ClaudeArgs:        json.RawMessage(`["--claude-setting"]`),
 		ValidationCommand: "go test ./...",
+		Version:           23,
 	}
 }
 
@@ -65,16 +68,30 @@ func TestAdapterForUsesDefaultProviderCommandAndArgs(t *testing.T) {
 }
 
 func TestAdapterForExplicitOverrideUsesSelectedProviderSettingsOnly(t *testing.T) {
-	settings := testProviderSettings()
-	adapter, command, args, err := adapterFor(agent.ProviderClaude, settings)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if adapter.Name() != agent.ProviderClaude || command != settings.ClaudeCommand || !reflect.DeepEqual(args, []string{"--claude-setting"}) {
-		t.Fatalf("adapter=%s command=%q args=%v", adapter.Name(), command, args)
-	}
-	if settings.AgentProvider != agent.ProviderCodex {
-		t.Fatalf("explicit override mutated project default: %q", settings.AgentProvider)
+	for _, test := range []struct {
+		requested      string
+		projectDefault string
+		command        string
+		args           []string
+	}{
+		{requested: agent.ProviderClaude, projectDefault: agent.ProviderCodex, command: "/project/bin/claude", args: []string{"--claude-setting"}},
+		{requested: agent.ProviderCodex, projectDefault: agent.ProviderClaude, command: "/project/bin/codex", args: []string{"--codex-setting"}},
+	} {
+		t.Run(test.requested+"_over_"+test.projectDefault, func(t *testing.T) {
+			settings := testProviderSettings()
+			settings.AgentProvider = test.projectDefault
+			version := settings.Version
+			adapter, command, args, err := adapterFor(test.requested, settings)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if adapter.Name() != test.requested || command != test.command || !reflect.DeepEqual(args, test.args) {
+				t.Fatalf("adapter=%s command=%q args=%v", adapter.Name(), command, args)
+			}
+			if settings.AgentProvider != test.projectDefault || settings.Version != version {
+				t.Fatalf("entry override mutated project settings: provider=%q version=%d", settings.AgentProvider, settings.Version)
+			}
+		})
 	}
 }
 
@@ -87,15 +104,28 @@ func TestAdapterForRejectsInvalidProvider(t *testing.T) {
 
 func TestTaskInvocationMapsResolvedProviderCommandAndArgs(t *testing.T) {
 	settings := testProviderSettings()
-	inv, provider, summary, err := taskInvocation(settings, agent.ProviderClaude, false, "/workspace", "prompt", "task", "", "/tmp/task.log")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if provider != agent.ProviderClaude || inv.Provider != agent.ProviderClaude || inv.Command != settings.ClaudeCommand || summary != settings.ClaudeCommand {
-		t.Fatalf("provider=%q invocation=%+v summary=%q", provider, inv, summary)
-	}
-	if len(inv.Args) < 3 || inv.Args[0] != "--claude-setting" || !strings.Contains(" "+strings.Join(inv.Args, " ")+" ", " -p prompt ") {
-		t.Fatalf("args=%v", inv.Args)
+	for _, test := range []struct {
+		name      string
+		requested string
+		provider  string
+		command   string
+		firstArg  string
+	}{
+		{name: "project_default", requested: "", provider: agent.ProviderCodex, command: settings.CodexCommand, firstArg: "--codex-setting"},
+		{name: "entry_override", requested: agent.ProviderClaude, provider: agent.ProviderClaude, command: settings.ClaudeCommand, firstArg: "--claude-setting"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			inv, provider, summary, err := taskInvocation(settings, test.requested, false, "/workspace", "prompt", "task", "", "/tmp/task.log")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if provider != test.provider || inv.Provider != test.provider || inv.Command != test.command || summary != test.command {
+				t.Fatalf("provider=%q invocation=%+v summary=%q", provider, inv, summary)
+			}
+			if len(inv.Args) < 3 || inv.Args[0] != test.firstArg || !strings.Contains(" "+strings.Join(inv.Args, " ")+" ", " prompt ") {
+				t.Fatalf("args=%v", inv.Args)
+			}
+		})
 	}
 }
 
@@ -113,6 +143,36 @@ func TestFinalValidationNeverUsesCLIAdapter(t *testing.T) {
 	}
 	if !reflect.DeepEqual(inv.Args, []string{"-lc", settings.ValidationCommand}) {
 		t.Fatalf("args=%v", inv.Args)
+	}
+}
+
+func TestApplicationInvocationsOnlyRegisterStartCallback(t *testing.T) {
+	settings := testProviderSettings()
+	task, _, _, err := taskInvocation(settings, "", false, "/workspace", "prompt", "task", "", "/tmp/task.log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	validation, _, _, err := taskInvocation(settings, "", true, "/workspace", "", "task", "", "/tmp/validation.log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	invocations := map[string]agent.Invocation{
+		"plan generation":  agent.Codex().GeneratePlan(settings.CodexCommand, nil, "/workspace", "prompt", time.Minute, "/tmp/plan.log"),
+		"task execution":   task,
+		"final validation": validation,
+		"discussion":       agent.Codex().Discuss(settings.CodexCommand, nil, "/workspace", "prompt", time.Minute, "/tmp/discussion.log"),
+	}
+	service := &Service{}
+	for name, inv := range invocations {
+		t.Run(name, func(t *testing.T) {
+			service.instrumentInvocation(&inv, uuid.New())
+			if inv.OnStart == nil {
+				t.Fatal("PID callback was not registered")
+			}
+			if inv.OnOutput != nil {
+				t.Fatal("application registered an output callback")
+			}
+		})
 	}
 }
 
@@ -141,6 +201,8 @@ func TestProbeConfiguredAgentsUsesIndependentCommandsAndKeepsPartialResults(t *t
 		t.Fatal(err)
 	}
 	settings := testProviderSettings()
+	settings.AgentProvider = "not-a-probe-default"
+	originalVersion := settings.Version
 	settings.CodexCommand = codexCommand
 	settings.CodexArgs = json.RawMessage(`["--codex-probe-setting"]`)
 	settings.ClaudeCommand = claudeCommand
@@ -162,5 +224,8 @@ func TestProbeConfiguredAgentsUsesIndependentCommandsAndKeepsPartialResults(t *t
 	}
 	if !strings.Contains(claudeResult.Output, "claude:--claude-probe-setting:--version") {
 		t.Fatalf("claude output=%q", claudeResult.Output)
+	}
+	if settings.AgentProvider != "not-a-probe-default" || settings.Version != originalVersion {
+		t.Fatalf("probe mutated project business defaults: provider=%q version=%d", settings.AgentProvider, settings.Version)
 	}
 }

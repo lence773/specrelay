@@ -102,6 +102,12 @@ func (p *Pool) run(parent context.Context, workerID string, job domain.Job) {
 	}
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
+	renewLease := p.Store.RenewJobLease
+	leaseName := "job"
+	if app.RequiresExclusiveWorkspace(job) {
+		renewLease = p.Store.RenewWorkspaceLease
+		leaseName = "workspace"
+	}
 	heartbeatDone := make(chan struct{})
 	go func() {
 		ticker := time.NewTicker(p.Heartbeat)
@@ -112,8 +118,8 @@ func (p *Pool) run(parent context.Context, workerID string, job domain.Job) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if err := p.Store.RenewWorkspaceLease(ctx, job.ID, workerID, p.LeaseDuration); err != nil {
-					p.Logger.Error("workspace lease lost; cancelling agent", "job", job.ID, "error", err)
+				if err := renewLease(ctx, job.ID, workerID, p.LeaseDuration); err != nil {
+					p.Logger.Error(leaseName+" lease lost; cancelling agent", "job", job.ID, "error", err)
 					cancel()
 					return
 				}
@@ -126,6 +132,14 @@ func (p *Pool) run(parent context.Context, workerID string, job domain.Job) {
 	if err == nil {
 		if completeErr := p.Store.CompleteJob(parent, job.ID, workerID); completeErr != nil && !errors.Is(completeErr, domain.ErrNotFound) {
 			p.Logger.Error("complete job failed", "job", job.ID, "error", completeErr)
+		}
+		return
+	}
+	if app.IsWorkspaceBusy(err) {
+		if deferErr := p.Store.DeferJobForWorkspace(parent, job.ID, workerID, time.Second); deferErr != nil && !errors.Is(deferErr, domain.ErrNotFound) {
+			p.Logger.Error("defer workspace-busy job failed", "job", job.ID, "error", deferErr)
+		} else if deferErr == nil {
+			p.Logger.Debug("job deferred while workspace is busy", "job", job.ID)
 		}
 		return
 	}

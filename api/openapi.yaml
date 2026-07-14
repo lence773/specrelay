@@ -200,14 +200,22 @@ paths:
     get:
       tags: [Events]
       operationId: listEvents
-      parameters: [{name: projectId, in: query, schema: {type: string, format: uuid}}, {name: after, in: query, schema: {type: integer, format: int64, default: 0}}]
-      responses: {'200': {description: Events, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/Event'}}}}}, default: {$ref: '#/components/responses/Error'}}
+      description: Returns one project event-history page from newest to oldest. The before cursor is exclusive and must be copied from the preceding page's nextBefore value.
+      parameters:
+        - {name: projectId, in: query, required: true, schema: {type: string, format: uuid}}
+        - {name: before, in: query, required: false, schema: {type: integer, format: int64, minimum: 1}, description: Exclusive event ID cursor; omit for the newest page}
+        - {name: limit, in: query, required: false, schema: {type: integer, minimum: 1, maximum: 1000, default: 10}, description: Maximum number of visible events to return}
+      responses: {'200': {description: Event history page ordered from newest to oldest, content: {application/json: {schema: {$ref: '#/components/schemas/EventPage'}}}}, '400': {$ref: '#/components/responses/Error'}, default: {$ref: '#/components/responses/Error'}}
   /events/stream:
     get:
       tags: [Events]
       operationId: streamEvents
-      parameters: [{name: projectId, in: query, schema: {type: string, format: uuid}}, {name: Last-Event-ID, in: header, schema: {type: integer, format: int64}}]
-      responses: {'200': {description: Server-sent Event records, content: {text/event-stream: {schema: {type: string}}}}, default: {$ref: '#/components/responses/Error'}}
+      description: Replays visible events strictly after the greater of Last-Event-ID and after, then continues streaming them from oldest to newest. agent.output records are never emitted.
+      parameters:
+        - {name: projectId, in: query, required: false, schema: {type: string, format: uuid}}
+        - {name: after, in: query, required: false, schema: {type: integer, format: int64, minimum: 0}, description: Exclusive event ID used for incremental recovery}
+        - {name: Last-Event-ID, in: header, required: false, schema: {type: integer, format: int64, minimum: 0}, description: Exclusive SSE event ID supplied by a reconnecting client}
+      responses: {'200': {description: Server-sent Event records ordered from oldest to newest, content: {text/event-stream: {schema: {type: string}}}}, '400': {$ref: '#/components/responses/Error'}, default: {$ref: '#/components/responses/Error'}}
 components:
   securitySchemes:
     sessionCookie: {type: apiKey, in: cookie, name: specrelay_session}
@@ -303,12 +311,15 @@ components:
       additionalProperties: false
       properties:
         kind: {type: string, enum: [requirement, feedback]}
-        parentIntakeId: {type: [string, 'null'], format: uuid}
+        parentIntakeId:
+          type: [string, 'null']
+          format: uuid
+          description: Required when kind is feedback. Must directly reference a requirement in the same project; feedback cannot be nested under feedback.
         title: {type: string, minLength: 1}
         body: {type: string}
         provider:
           $ref: '#/components/schemas/CLIProvider'
-          description: Optional provider override only for plan generation automatically queued when this request creates a requirement with project automation enabled. When omitted, the queued job carries no override and uses ProjectSettings.agentProvider on the server. It does not change the project default.
+          description: Optional provider override only for plan generation automatically queued when this request creates a requirement or feedback with project automation enabled. When omitted, the queued job carries no override and uses ProjectSettings.agentProvider on the server. It does not change the project default.
 
     Intake: {allOf: [{$ref: '#/components/schemas/ResourceBase'}, {type: object, required: [projectId, kind, title, body, status, configSnapshot], properties: {projectId: {type: string, format: uuid}, kind: {type: string, enum: [requirement, feedback]}, parentIntakeId: {type: [string, 'null'], format: uuid}, title: {type: string}, body: {type: string}, status: {$ref: '#/components/schemas/IntakeStatus'}, configSnapshot: {type: object}}}]}
     PlanSpec: {type: object, required: [title, summary, tasks, finalValidation], additionalProperties: false, properties: {title: {type: string}, summary: {type: string}, tasks: {type: array, items: {type: object, required: [title, scope, acceptance], properties: {title: {type: string}, scope: {type: array, items: {type: string}}, acceptance: {type: array, items: {type: string}}}}}, finalValidation: {type: array, items: {type: string}}}}
@@ -340,5 +351,6 @@ components:
           items: {$ref: '#/components/schemas/CLIProbeResult'}
     AgentRunLog: {type: object, required: [runId, status, provider, lines, sizeBytes, hasMore, updatedAt], properties: {runId: {type: string, format: uuid}, status: {type: string}, provider: {oneOf: [{$ref: '#/components/schemas/CLIProvider'}, {const: validation}]}, lines: {type: array, items: {type: string}, description: Complete physical log entries in chronological order}, sizeBytes: {type: integer, format: int64}, hasMore: {type: boolean}, nextBefore: {type: [integer, 'null'], format: int64, description: Pass this as before to load older entries}, updatedAt: {type: string, format: date-time}}}
     Event: {type: object, required: [id, type, aggregateType, aggregateId, resourceVersion, payload, occurredAt], properties: {id: {type: integer, format: int64}, projectId: {type: [string, 'null'], format: uuid}, type: {type: string}, aggregateType: {type: string}, aggregateId: {type: string, format: uuid}, resourceVersion: {type: integer, format: int64}, payload: {type: object}, occurredAt: {type: string, format: date-time}}}
+    EventPage: {type: object, required: [items, hasMore, nextBefore], additionalProperties: false, properties: {items: {type: array, items: {$ref: '#/components/schemas/Event'}, description: Visible events ordered from newest to oldest}, hasMore: {type: boolean}, nextBefore: {type: [integer, 'null'], format: int64, minimum: 1, description: Pass this exclusive cursor as before to load the next older page; null when no older page remains}}}
     AsyncResponse: {type: object, required: [jobId, state, resourceVersion], properties: {jobId: {type: string, format: uuid}, state: {type: string}, resourceVersion: {type: integer, format: int64}}}
     Error: {type: object, required: [code, message, requestId], properties: {code: {type: string}, message: {type: string}, details: {}, requestId: {type: string, format: uuid}}}

@@ -66,13 +66,12 @@ func TestRunnerWithoutTimeoutStillHonorsParentCancellation(t *testing.T) {
 	}
 }
 
-func TestRunnerReportsPIDAndOutput(t *testing.T) {
+func TestRunnerReportsPIDAndLogsOutputWithoutOutputCallback(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip()
 	}
 	dir := t.TempDir()
 	pid := make(chan int, 1)
-	output := make(chan []byte, 4)
 	result, err := NewRunner().Run(context.Background(), "callbacks", Invocation{
 		Provider: "fake",
 		Command:  "sh",
@@ -81,7 +80,6 @@ func TestRunnerReportsPIDAndOutput(t *testing.T) {
 		Timeout:  time.Second,
 		LogPath:  filepath.Join(dir, "run.log"),
 		OnStart:  func(value int) { pid <- value },
-		OnOutput: func(chunk []byte) { output <- chunk },
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -89,20 +87,20 @@ func TestRunnerReportsPIDAndOutput(t *testing.T) {
 	if got := <-pid; got <= 0 {
 		t.Fatalf("pid=%d", got)
 	}
-	close(output)
-	var streamed []byte
-	for chunk := range output {
-		streamed = append(streamed, chunk...)
-	}
-	if len(streamed) == 0 || len(result.Output) == 0 {
-		t.Fatalf("streamed=%q result=%q", streamed, result.Output)
+	if len(result.Output) == 0 {
+		t.Fatal("runner did not capture output")
 	}
 	logged, err := os.ReadFile(result.LogPath)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(logged) != len(result.Output) {
-		t.Fatalf("log bytes=%d output bytes=%d", len(logged), len(result.Output))
+	if string(logged) != string(result.Output) {
+		t.Fatalf("log=%q output=%q", logged, result.Output)
+	}
+	for _, expected := range []string{"hello", "error"} {
+		if !strings.Contains(string(logged), expected) {
+			t.Fatalf("log %q does not contain %q", logged, expected)
+		}
 	}
 }
 
@@ -203,22 +201,36 @@ func TestCommandEnvDropsHostCodexSessionContext(t *testing.T) {
 }
 
 func TestResolveProviderUsesConfiguredDefault(t *testing.T) {
-	adapter, err := ResolveProvider("", ProviderClaude)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if adapter.Name() != ProviderClaude {
-		t.Fatalf("provider=%q", adapter.Name())
+	for _, fallback := range []string{ProviderCodex, ProviderClaude} {
+		t.Run(fallback, func(t *testing.T) {
+			adapter, err := ResolveProvider("", fallback)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if adapter.Name() != fallback {
+				t.Fatalf("provider=%q, want fallback %q", adapter.Name(), fallback)
+			}
+		})
 	}
 }
 
 func TestResolveProviderPrefersExplicitSelection(t *testing.T) {
-	adapter, err := ResolveProvider(ProviderCodex, ProviderClaude)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if adapter.Name() != ProviderCodex {
-		t.Fatalf("provider=%q", adapter.Name())
+	for _, test := range []struct {
+		requested string
+		fallback  string
+	}{
+		{requested: ProviderCodex, fallback: ProviderClaude},
+		{requested: ProviderClaude, fallback: ProviderCodex},
+	} {
+		t.Run(test.requested+"_over_"+test.fallback, func(t *testing.T) {
+			adapter, err := ResolveProvider(test.requested, test.fallback)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if adapter.Name() != test.requested {
+				t.Fatalf("provider=%q, want requested %q", adapter.Name(), test.requested)
+			}
+		})
 	}
 }
 
