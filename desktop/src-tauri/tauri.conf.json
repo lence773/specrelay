@@ -1,0 +1,24 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "SpecRelay",
+  "version": "1.0.0",
+  "identifier": "com.lyming99.specrelay",
+  "build": {
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [],
+    "security": {
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "category": "DeveloperTool",
+    "shortDescription": "Local-first CLI workflow manager",
+    "longDescription": "SpecRelay turns requirements into plans and local CLI-powered implementation workflows.",
+    "externalBin": ["binaries/specrelay"],
+    "resources": ["resources/frontend", "resources/postgres.compose.yml"],
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/128x128@2x.png"]
+  }
+}

@@ -1,5 +1,8 @@
 name: specrelay
 
+# Docker is intentionally limited to PostgreSQL. The Go backend must run on the
+# host so that it can access local project directories and the user's Codex or
+# Claude CLI installation.
 services:
   postgres:
     image: postgres:16-alpine
@@ -18,31 +21,5 @@ services:
       timeout: 3s
       retries: 20
 
-  backend:
-    build:
-      context: ..
-      dockerfile: backend/Dockerfile
-      args:
-        GOPROXY: ${GOPROXY:-https://proxy.golang.org,direct}
-    environment:
-      DATABASE_URL: postgresql://specrelay:${POSTGRES_PASSWORD:-specrelay-dev-only}@postgres:5432/specrelay?sslmode=disable
-      HTTP_ADDR: 0.0.0.0:43846
-      DATA_DIR: /data
-      PUBLIC_DIR: /app/frontend
-      WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-2}
-      ACCESS_TOKEN: ${ACCESS_TOKEN:-}
-      MCP_TOKEN: ${MCP_TOKEN:-}
-    ports:
-      - "127.0.0.1:43846:43846"
-    volumes:
-      - specrelay-data:/data
-      - ${WORKSPACE_ROOT:-..}:${WORKSPACE_ROOT_CONTAINER:-/workspaces}
-    depends_on:
-      postgres:
-        condition: service_healthy
-    security_opt:
-      - no-new-privileges:true
-
 volumes:
   specrelay-postgres:
-  specrelay-data:

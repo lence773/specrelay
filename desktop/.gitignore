@@ -1,0 +1,5 @@
+node_modules/
+src-tauri/target/
+src-tauri/binaries/specrelay-*
+src-tauri/resources/frontend/*
+!src-tauri/resources/frontend/.gitkeep

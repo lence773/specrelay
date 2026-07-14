@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>SpecRelay</title>
+    <style>
+      :root { color-scheme: dark; font-family: "Noto Sans CJK SC", "Microsoft YaHei", system-ui, sans-serif; background: #111827; color: #f9fafb; }
+      body { min-height: 100vh; margin: 0; display: grid; place-items: center; }
+      main { width: min(34rem, calc(100vw - 3rem)); padding: 2rem; border: 1px solid #374151; border-radius: 1rem; background: #1f2937; box-shadow: 0 18px 60px #0008; }
+      h1 { margin: 0 0 .75rem; font-size: 1.65rem; }
+      p { margin: 0; line-height: 1.7; color: #d1d5db; }
+      .spinner { width: 1.5rem; height: 1.5rem; margin-top: 1.25rem; border: 3px solid #4b5563; border-top-color: #60a5fa; border-radius: 50%; animation: spin .8s linear infinite; }
+      @keyframes spin { to { transform: rotate(360deg); } }
+      code { color: #93c5fd; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>正在启动 SpecRelay…</h1>
+      <p>正在检查本机 Docker 数据库并启动宿主机服务。服务启动后将可直接访问本地项目目录和 Codex / Claude CLI。</p>
+      <div class="spinner" aria-label="正在加载"></div>
+    </main>
+  </body>
+</html>

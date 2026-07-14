@@ -7,7 +7,7 @@
 - `api/openapi.yaml`：REST API 的唯一契约，前端 SDK 由该文件生成。
 - `backend/`：Go HTTP API、SSE、MCP、持久化队列、Agent Runner 和数据库迁移。
 - `frontend/`：Vite + React + TypeScript，服务端状态由 TanStack Query 管理。
-- `deploy/`：PostgreSQL 16 和自包含 Web 镜像的 Docker Compose 配置。
+- `deploy/`：仅 PostgreSQL 16 的 Docker Compose 配置；Go 后端与本地 CLI 始终在宿主机运行。
 
 浏览器不访问本机文件系统，也不直接执行 Codex、Claude 或验证命令。Go 服务必须运行在能够访问项目 workspace 的机器上，并且只有后端可以启动 Agent CLI。
 
@@ -85,7 +85,7 @@ MCP 暴露在 `/mcp`，使用独立 Bearer Token。MCP 和 REST 复用同一个 
 | `DATABASE_URL` | 无，必填 | PostgreSQL 连接字符串；生产环境应启用 TLS |
 | `HTTP_ADDR` | `127.0.0.1:43846` | HTTP 监听地址 |
 | `DATA_DIR` | 用户配置目录下的 `specrelay` | attachment、Agent 日志等受控数据 |
-| `PUBLIC_DIR` | 空 | 前端静态目录；容器内为 `/app/frontend` |
+| `PUBLIC_DIR` | 空 | 前端静态目录；桌面启动器会指向安装包中的 React 构建产物 |
 | `WORKER_CONCURRENCY` | `2` | 全局 Worker 并发，范围 1–64 |
 | `LOG_LEVEL` | `info` | `debug`、`info`、`warn` 或 `error` |
 | `WORKSPACE_LEASE_DURATION` | `30s` | workspace 租约时长 |
@@ -102,7 +102,7 @@ MCP 暴露在 `/mcp`，使用独立 Bearer Token。MCP 和 REST 复用同一个 
 
 ```bash
 # 只启动开发数据库
-docker compose -f deploy/docker-compose.yml up -d postgres
+docker compose -f deploy/docker-compose.yml up -d --wait postgres
 
 # 后端
 cd backend
@@ -120,21 +120,19 @@ npm run dev
 
 打开 `http://127.0.0.1:43847/?token=local-browser-token`。
 
-## Docker Compose
+## Docker Compose（仅数据库）
+
+Docker Compose 只管理 PostgreSQL，不能也不应该启动 Go 后端。后端必须以宿主机进程运行，才能安全地使用真实本地目录以及已安装的 Codex/Claude CLI：
 
 ```bash
-ACCESS_TOKEN='replace-with-a-long-random-value' \
-MCP_TOKEN='replace-with-another-long-random-value' \
-POSTGRES_PASSWORD='replace-me' \
-docker compose -f deploy/docker-compose.yml up --build -d
+# 仅启动数据库
+docker compose -f deploy/docker-compose.yml up -d --wait postgres
 
-curl http://127.0.0.1:43846/healthz
-curl http://127.0.0.1:43846/readyz
+# 在宿主机启动后端（脚本会再次确保数据库已启动）
+./scripts/dev/start-backend.sh
 ```
 
-镜像内包含编译后的 React 前端和 `/bin/sh`，不依赖宿主机 `frontend/dist`。Compose 默认只把 HTTP 和 PostgreSQL 绑定到 `127.0.0.1`。
-
-容器内创建项目时，workspace 路径必须使用容器可见路径。默认把 `${WORKSPACE_ROOT:-..}` 挂载到 `/workspaces`；例如宿主机仓库位于挂载根下的 `demo`，项目路径应填写 `/workspaces/demo`。Codex/Claude CLI 也必须以镜像扩展、受控 sidecar 或明确挂载的方式在后端容器内可用。
+桌面版也沿用这一边界：Tauri 在宿主机启动随包附带的 Go 后端，仅调用 Docker Compose 启动专用 PostgreSQL 服务。关闭桌面窗口只结束后端，绝不执行 `docker compose down` 或删除数据库卷。
 
 ## 测试
 
