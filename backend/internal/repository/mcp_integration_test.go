@@ -56,7 +56,7 @@ func TestRESTAndMCPShareApplicationStateAndEvents(t *testing.T) {
 	if err = migrations.Run(ctx, pool); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = pool.Exec(ctx, `TRUNCATE access_tokens,agent_runs,events,workspace_leases,jobs,plan_tasks,plans,attachments,intakes,project_settings,projects RESTART IDENTITY CASCADE`); err != nil {
+	if _, err = pool.Exec(ctx, `TRUNCATE runtime_instances,access_tokens,agent_runs,events,workspace_leases,jobs,plan_tasks,plans,attachments,intakes,project_settings,projects RESTART IDENTITY CASCADE`); err != nil {
 		t.Fatal(err)
 	}
 
@@ -227,7 +227,7 @@ func TestFinalValidationUsesValidationProviderAndCommand(t *testing.T) {
 	if err = migrations.Run(ctx, pool); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = pool.Exec(ctx, `TRUNCATE access_tokens,agent_runs,events,workspace_leases,jobs,plan_tasks,plans,attachments,intakes,project_settings,projects RESTART IDENTITY CASCADE`); err != nil {
+	if _, err = pool.Exec(ctx, `TRUNCATE runtime_instances,access_tokens,agent_runs,events,workspace_leases,jobs,plan_tasks,plans,attachments,intakes,project_settings,projects RESTART IDENTITY CASCADE`); err != nil {
 		t.Fatal(err)
 	}
 

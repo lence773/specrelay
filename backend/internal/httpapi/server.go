@@ -3,6 +3,7 @@ package httpapi
 import (
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/google/uuid"
@@ -27,14 +29,17 @@ import (
 )
 
 type Server struct {
-	Store     *repository.Store
-	App       *app.Service
-	Auth      *Auth
-	Broker    *events.Broker
-	Logger    *slog.Logger
-	PublicDir string
-	DataDir   string
-	MCP       http.Handler
+	Store           *repository.Store
+	App             *app.Service
+	Auth            *Auth
+	Broker          *events.Broker
+	Logger          *slog.Logger
+	PublicDir       string
+	DataDir         string
+	MCP             http.Handler
+	ShutdownToken   string
+	RequestShutdown func()
+	Draining        *atomic.Bool
 }
 type apiError struct {
 	Code      string `json:"code"`
@@ -52,6 +57,7 @@ func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
 	mux.HandleFunc("GET /readyz", s.ready)
+	mux.HandleFunc("POST /internal/shutdown", s.shutdown)
 	mux.HandleFunc("POST /api/v1/auth/exchange", s.exchange)
 	mux.HandleFunc("GET /api/v1/filesystem/directories", s.directories)
 	mux.HandleFunc("GET /api/v1/projects", s.projects)
@@ -107,7 +113,12 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 			writeError(w, r, http.StatusForbidden, "request_not_allowed", "Host or Origin is not allowed", nil)
 			return
 		}
-		if r.URL.Path != "/healthz" && r.URL.Path != "/readyz" && r.URL.Path != "/api/v1/auth/exchange" && !strings.HasPrefix(r.URL.Path, "/assets/") && r.URL.Path != "/" && !s.Auth.Allowed(r) {
+		isShutdownEndpoint := r.URL.Path == "/internal/shutdown"
+		if s.Draining != nil && s.Draining.Load() && !isShutdownEndpoint && r.URL.Path != "/healthz" {
+			writeError(w, r, http.StatusServiceUnavailable, "shutting_down", "Backend is shutting down", nil)
+			return
+		}
+		if !isShutdownEndpoint && r.URL.Path != "/healthz" && r.URL.Path != "/readyz" && r.URL.Path != "/api/v1/auth/exchange" && !strings.HasPrefix(r.URL.Path, "/assets/") && r.URL.Path != "/" && !s.Auth.Allowed(r) {
 			writeError(w, r, http.StatusUnauthorized, "unauthorized", "Authentication required", nil)
 			return
 		}
@@ -123,6 +134,21 @@ func (s *Server) middleware(next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
+func (s *Server) shutdown(w http.ResponseWriter, r *http.Request) {
+	token := r.Header.Get("X-SpecRelay-Shutdown-Token")
+	if s.ShutdownToken == "" || subtle.ConstantTimeCompare([]byte(token), []byte(s.ShutdownToken)) != 1 {
+		writeError(w, r, http.StatusUnauthorized, "unauthorized", "Shutdown token is invalid", nil)
+		return
+	}
+	if s.Draining != nil {
+		s.Draining.Store(true)
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{"state": "shutting_down"})
+	if s.RequestShutdown != nil {
+		s.RequestShutdown()
+	}
+}
+
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 }

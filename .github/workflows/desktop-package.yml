@@ -10,8 +10,8 @@ permissions:
   contents: read
 
 jobs:
-  linux-deb:
-    name: Build Linux .deb
+  linux:
+    name: Linux x64 (.deb, .AppImage, .rpm)
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
@@ -45,15 +45,173 @@ jobs:
             librsvg2-dev \
             libssl-dev \
             libayatana-appindicator3-dev \
-            libxdo-dev
+            libxdo-dev \
+            rpm
+          if apt-cache show libfuse2t64 >/dev/null 2>&1; then
+            sudo apt-get install --yes libfuse2t64
+          else
+            sudo apt-get install --yes libfuse2
+          fi
 
-      - name: Build desktop installer
+      - name: Build Linux desktop bundles
+        env:
+          TAURI_BUNDLES: deb,appimage,rpm
         run: ./scripts/package-desktop.sh
 
-      - name: Upload Linux installer
+      - name: Upload Linux desktop bundles
         uses: actions/upload-artifact@v4
         with:
-          name: specrelay-linux-deb-${{ github.sha }}
-          path: desktop/src-tauri/target/release/bundle/deb/*.deb
+          name: specrelay-linux-x64-${{ github.sha }}
+          path: |
+            desktop/src-tauri/target/release/bundle/deb/*.deb
+            desktop/src-tauri/target/release/bundle/appimage/*.AppImage
+            desktop/src-tauri/target/release/bundle/rpm/*.rpm
           if-no-files-found: error
           retention-days: 30
+
+  windows:
+    name: Windows x64 (NSIS, MSI)
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            frontend/package-lock.json
+            desktop/package-lock.json
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build Windows desktop bundles
+        shell: bash
+        env:
+          TAURI_BUNDLES: nsis,msi
+        run: ./scripts/package-desktop.sh
+
+      - name: Upload Windows desktop bundles
+        uses: actions/upload-artifact@v4
+        with:
+          name: specrelay-windows-x64-${{ github.sha }}
+          path: |
+            desktop/src-tauri/target/release/bundle/nsis/*.exe
+            desktop/src-tauri/target/release/bundle/msi/*.msi
+          if-no-files-found: error
+          retention-days: 30
+
+  macos-intel:
+    name: macOS Intel (.dmg)
+    runs-on: macos-13
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            frontend/package-lock.json
+            desktop/package-lock.json
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build macOS Intel desktop bundle
+        env:
+          TAURI_BUNDLES: dmg
+        run: ./scripts/package-desktop.sh
+
+      - name: Upload macOS Intel desktop bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: specrelay-macos-intel-${{ github.sha }}
+          path: desktop/src-tauri/target/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+          retention-days: 30
+
+  macos-apple-silicon:
+    name: macOS Apple Silicon (.dmg)
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: backend/go.mod
+          cache-dependency-path: backend/go.sum
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            frontend/package-lock.json
+            desktop/package-lock.json
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Build macOS Apple Silicon desktop bundle
+        env:
+          TAURI_BUNDLES: dmg
+        run: ./scripts/package-desktop.sh
+
+      - name: Upload macOS Apple Silicon desktop bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: specrelay-macos-apple-silicon-${{ github.sha }}
+          path: desktop/src-tauri/target/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+          retention-days: 30
+
+  release:
+    name: Publish version release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux, windows, macos-intel, macos-apple-silicon]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - name: Download desktop bundles
+        uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+
+      - name: Create or update GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mapfile -d '' files < <(find release-assets -type f -print0)
+          if [[ "${#files[@]}" -eq 0 ]]; then
+            echo 'No desktop bundles were downloaded.' >&2
+            exit 1
+          fi
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" --generate-notes "${files[@]}"
+          fi

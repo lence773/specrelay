@@ -35,7 +35,7 @@ func testStore(t *testing.T) *Store {
 	if err = migrations.Run(context.Background(), pool); err != nil {
 		t.Fatalf("migration not idempotent: %v", err)
 	}
-	_, err = pool.Exec(context.Background(), `TRUNCATE access_tokens,agent_runs,events,workspace_leases,jobs,plan_tasks,plans,attachments,intakes,project_settings,projects RESTART IDENTITY CASCADE`)
+	_, err = pool.Exec(context.Background(), `TRUNCATE runtime_instances,access_tokens,agent_runs,events,workspace_leases,jobs,plan_tasks,plans,attachments,intakes,project_settings,projects RESTART IDENTITY CASCADE`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -497,6 +497,227 @@ func TestAutomationStopRestoresQueuedPlanningIntake(t *testing.T) {
 	}
 	if status != "cancelled" {
 		t.Fatalf("job status=%s", status)
+	}
+}
+
+func TestReconcileInstanceShutdownKeepsPlansRecoverableAndTasksBlocked(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	const owner = "desktop-instance-a"
+
+	project, plan, tasks := createReadyPlanFixture(t, store, "/tmp/shutdown-reconcile")
+	taskJob, err := store.QueueTask(ctx, tasks[0].ID, tasks[0].Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runningTask, err := store.StartTask(ctx, tasks[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.Pool.Exec(ctx, `UPDATE jobs
+		SET status='running',worker_id=$2,lease_expires_at=now()+interval '10 minutes',attempt=1
+		WHERE id=$1`, taskJob.ID, owner+":worker-1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.Pool.Exec(ctx, `INSERT INTO workspace_leases(id,project_id,workspace_path_normalized,worker_id,job_id,expires_at)
+		VALUES($1,$2,$3,$4,$5,now()+interval '10 minutes')`, uuid.New(), project.ID, "/tmp/shutdown-reconcile", owner+":worker-1", taskJob.ID); err != nil {
+		t.Fatal(err)
+	}
+	taskRunID := uuid.New()
+	if err = store.StartAgentRun(ctx, AgentRunStart{ID: taskRunID, ProjectID: project.ID, JobID: &taskJob.ID, TaskID: &runningTask.ID, Provider: "codex", CommandSummary: "codex task", LogPath: "/tmp/task.log", OwnerInstanceID: owner}); err != nil {
+		t.Fatal(err)
+	}
+	discussionRunID := uuid.New()
+	if err = store.StartAgentRun(ctx, AgentRunStart{ID: discussionRunID, ProjectID: project.ID, Provider: "codex", CommandSummary: "codex discussion", LogPath: "/tmp/discussion.log", OwnerInstanceID: owner}); err != nil {
+		t.Fatal(err)
+	}
+	otherRunID := uuid.New()
+	if err = store.StartAgentRun(ctx, AgentRunStart{ID: otherRunID, ProjectID: project.ID, Provider: "codex", CommandSummary: "other desktop", LogPath: "/tmp/other.log", OwnerInstanceID: "desktop-instance-b"}); err != nil {
+		t.Fatal(err)
+	}
+
+	intake, planJob, err := store.CreateIntake(ctx, CreateIntakeParams{ProjectID: project.ID, Kind: "requirement", Title: "Planning", Body: "Should resume", ConfigSnapshot: json.RawMessage(`{}`), QueuePlan: true})
+	if err != nil || planJob == nil || intake.Status != "planning" {
+		t.Fatalf("create planning intake: intake=%+v job=%+v err=%v", intake, planJob, err)
+	}
+	if _, err = store.Pool.Exec(ctx, `UPDATE jobs
+		SET status='running',worker_id=$2,lease_expires_at=now()+interval '10 minutes',attempt=1
+		WHERE id=$1`, planJob.ID, owner+":worker-2"); err != nil {
+		t.Fatal(err)
+	}
+	planRunID := uuid.New()
+	if err = store.StartAgentRun(ctx, AgentRunStart{ID: planRunID, ProjectID: project.ID, JobID: &planJob.ID, Provider: "codex", CommandSummary: "codex plan", LogPath: "/tmp/plan.log", OwnerInstanceID: owner}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err = store.ReconcileInstanceShutdown(ctx, owner); err != nil {
+		t.Fatal(err)
+	}
+
+	var taskJobStatus string
+	if err = store.Pool.QueryRow(ctx, `SELECT status FROM jobs WHERE id=$1`, taskJob.ID).Scan(&taskJobStatus); err != nil {
+		t.Fatal(err)
+	}
+	if taskJobStatus != "cancelled" {
+		t.Fatalf("task job status=%q, want cancelled", taskJobStatus)
+	}
+	stoppedTask, err := store.GetTask(ctx, runningTask.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stoppedTask.Status != "pending" || stoppedTask.StartedAt != nil || stoppedTask.FinishedAt != nil {
+		t.Fatalf("task was not reset safely: %+v", stoppedTask)
+	}
+	stoppedPlan, err := store.GetPlan(ctx, plan.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stoppedPlan.Status != "blocked" {
+		t.Fatalf("plan status=%q, want blocked", stoppedPlan.Status)
+	}
+	var leases int
+	if err = store.Pool.QueryRow(ctx, `SELECT count(*) FROM workspace_leases WHERE job_id=$1`, taskJob.ID).Scan(&leases); err != nil {
+		t.Fatal(err)
+	}
+	if leases != 0 {
+		t.Fatalf("workspace lease retained after shutdown: %d", leases)
+	}
+	for _, runID := range []uuid.UUID{taskRunID, discussionRunID, planRunID} {
+		var status string
+		if err = store.Pool.QueryRow(ctx, `SELECT status FROM agent_runs WHERE id=$1`, runID).Scan(&status); err != nil {
+			t.Fatal(err)
+		}
+		if status != "cancelled" {
+			t.Fatalf("owned agent run %s status=%q, want cancelled", runID, status)
+		}
+	}
+	var otherStatus string
+	if err = store.Pool.QueryRow(ctx, `SELECT status FROM agent_runs WHERE id=$1`, otherRunID).Scan(&otherStatus); err != nil {
+		t.Fatal(err)
+	}
+	if otherStatus != "running" {
+		t.Fatalf("different instance run was changed to %q", otherStatus)
+	}
+	var planJobStatus string
+	var planJobAttempt int
+	var planJobWorker *string
+	if err = store.Pool.QueryRow(ctx, `SELECT status,attempt,worker_id FROM jobs WHERE id=$1`, planJob.ID).Scan(&planJobStatus, &planJobAttempt, &planJobWorker); err != nil {
+		t.Fatal(err)
+	}
+	if planJobStatus != "queued" || planJobAttempt != 0 || planJobWorker != nil {
+		t.Fatalf("planning job was not safely requeued: status=%q attempt=%d worker=%v", planJobStatus, planJobAttempt, planJobWorker)
+	}
+}
+
+func TestRecoverJobsUsesRuntimeHeartbeatWithoutInterruptingLiveInstances(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	const deadOwner = "dead-desktop"
+	const liveOwner = "live-desktop"
+	const slowOwner = "slow-heartbeat-desktop"
+	if err := store.RegisterRuntimeInstance(ctx, deadOwner, 10*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RegisterRuntimeInstance(ctx, liveOwner, 10*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	// A live instance may intentionally use a longer heartbeat. Recovery must
+	// wait for its declared cadence instead of applying a global 30-second cut-off.
+	if err := store.RegisterRuntimeInstance(ctx, slowOwner, 20*time.Second); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Pool.Exec(ctx, `UPDATE runtime_instances SET heartbeat_at=now()-interval '31 seconds' WHERE instance_id=$1`, deadOwner); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Pool.Exec(ctx, `UPDATE runtime_instances SET heartbeat_at=now()-interval '31 seconds' WHERE instance_id=$1`, slowOwner); err != nil {
+		t.Fatal(err)
+	}
+
+	project, plan, tasks := createReadyPlanFixture(t, store, "/tmp/runtime-recovery")
+	deadJob, err := store.QueueTask(ctx, tasks[0].ID, tasks[0].Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deadTask, err := store.StartTask(ctx, tasks[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.Pool.Exec(ctx, `UPDATE jobs SET status='running',worker_id=$2,lease_expires_at=now()+interval '10 minutes' WHERE id=$1`, deadJob.ID, deadOwner+":worker-1"); err != nil {
+		t.Fatal(err)
+	}
+	deadRunID := uuid.New()
+	if err = store.StartAgentRun(ctx, AgentRunStart{ID: deadRunID, ProjectID: project.ID, JobID: &deadJob.ID, TaskID: &deadTask.ID, Provider: "codex", CommandSummary: "dead task", LogPath: "/tmp/dead-task.log", OwnerInstanceID: deadOwner}); err != nil {
+		t.Fatal(err)
+	}
+	deadDiscussionID := uuid.New()
+	if err = store.StartAgentRun(ctx, AgentRunStart{ID: deadDiscussionID, ProjectID: project.ID, Provider: "codex", CommandSummary: "dead discussion", LogPath: "/tmp/dead-discussion.log", OwnerInstanceID: deadOwner}); err != nil {
+		t.Fatal(err)
+	}
+	liveDiscussionID := uuid.New()
+	if err = store.StartAgentRun(ctx, AgentRunStart{ID: liveDiscussionID, ProjectID: project.ID, Provider: "codex", CommandSummary: "live discussion", LogPath: "/tmp/live-discussion.log", OwnerInstanceID: liveOwner}); err != nil {
+		t.Fatal(err)
+	}
+	slowIntake, slowJob, err := store.CreateIntake(ctx, CreateIntakeParams{ProjectID: project.ID, Kind: "requirement", Title: "Slow heartbeat planning", Body: "must remain live", ConfigSnapshot: json.RawMessage(`{}`), QueuePlan: true})
+	if err != nil || slowJob == nil || slowIntake.Status != "planning" {
+		t.Fatalf("create slow heartbeat plan job: intake=%+v job=%+v err=%v", slowIntake, slowJob, err)
+	}
+	if _, err = store.Pool.Exec(ctx, `UPDATE jobs SET status='running',worker_id=$2,lease_expires_at=now()+interval '10 minutes' WHERE id=$1`, slowJob.ID, slowOwner+":worker-1"); err != nil {
+		t.Fatal(err)
+	}
+	slowRunID := uuid.New()
+	if err = store.StartAgentRun(ctx, AgentRunStart{ID: slowRunID, ProjectID: project.ID, JobID: &slowJob.ID, Provider: "codex", CommandSummary: "slow live plan", LogPath: "/tmp/slow-plan.log", OwnerInstanceID: slowOwner}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err = store.RecoverJobs(ctx); err != nil {
+		t.Fatal(err)
+	}
+	var deadJobStatus string
+	if err = store.Pool.QueryRow(ctx, `SELECT status FROM jobs WHERE id=$1`, deadJob.ID).Scan(&deadJobStatus); err != nil {
+		t.Fatal(err)
+	}
+	if deadJobStatus != "cancelled" {
+		t.Fatalf("dead job status=%q, want cancelled", deadJobStatus)
+	}
+	recoveredTask, err := store.GetTask(ctx, deadTask.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recoveredTask.Status != "pending" {
+		t.Fatalf("dead task status=%q, want pending", recoveredTask.Status)
+	}
+	recoveredPlan, err := store.GetPlan(ctx, plan.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if recoveredPlan.Status != "blocked" {
+		t.Fatalf("recovered plan status=%q, want blocked", recoveredPlan.Status)
+	}
+	for _, runID := range []uuid.UUID{deadRunID, deadDiscussionID} {
+		var status string
+		if err = store.Pool.QueryRow(ctx, `SELECT status FROM agent_runs WHERE id=$1`, runID).Scan(&status); err != nil {
+			t.Fatal(err)
+		}
+		if status != "cancelled" {
+			t.Fatalf("dead owner run %s status=%q, want cancelled", runID, status)
+		}
+	}
+	var liveStatus string
+	if err = store.Pool.QueryRow(ctx, `SELECT status FROM agent_runs WHERE id=$1`, liveDiscussionID).Scan(&liveStatus); err != nil {
+		t.Fatal(err)
+	}
+	if liveStatus != "running" {
+		t.Fatalf("live owner run status=%q, want running", liveStatus)
+	}
+	var slowJobStatus, slowRunStatus string
+	if err = store.Pool.QueryRow(ctx, `SELECT status FROM jobs WHERE id=$1`, slowJob.ID).Scan(&slowJobStatus); err != nil {
+		t.Fatal(err)
+	}
+	if err = store.Pool.QueryRow(ctx, `SELECT status FROM agent_runs WHERE id=$1`, slowRunID).Scan(&slowRunStatus); err != nil {
+		t.Fatal(err)
+	}
+	if slowJobStatus != "running" || slowRunStatus != "running" {
+		t.Fatalf("slow live instance was interrupted: job=%q run=%q", slowJobStatus, slowRunStatus)
 	}
 }
 

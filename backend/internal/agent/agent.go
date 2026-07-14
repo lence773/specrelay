@@ -12,7 +12,6 @@ import (
 	"regexp"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 )
 
@@ -47,10 +46,15 @@ type Runner struct {
 	mu        sync.Mutex
 	running   map[string]*exec.Cmd
 	cancelled map[string]bool
+	cancels   map[string]context.CancelFunc
 }
 
 func NewRunner() *Runner {
-	return &Runner{running: map[string]*exec.Cmd{}, cancelled: map[string]bool{}}
+	return &Runner{
+		running:   map[string]*exec.Cmd{},
+		cancelled: map[string]bool{},
+		cancels:   map[string]context.CancelFunc{},
+	}
 }
 
 var sessionPattern = regexp.MustCompile(`(?i)(?:session(?:_id)?|thread_id)["' :=]+([A-Za-z0-9_-]{6,})`)
@@ -96,7 +100,7 @@ func (r *Runner) Run(ctx context.Context, key string, inv Invocation) (Result, e
 	cmd := exec.Command(inv.Command, inv.Args...)
 	cmd.Dir = inv.Dir
 	cmd.Env = commandEnv(inv.Env)
-	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	configureProcess(cmd)
 	// Give os/exec a shared writer rather than reading StdoutPipe and StderrPipe
 	// ourselves. Cmd.Wait waits for its configured writers to finish; with
 	// explicit pipes, calling Wait before both copies complete can close a pipe
@@ -114,8 +118,15 @@ func (r *Runner) Run(ctx context.Context, key string, inv Invocation) (Result, e
 	// small window between process creation and registration. CancelPrefix marks
 	// the key even when cmd.Process is not populated yet.
 	r.running[key] = cmd
+	r.cancels[key] = cancel
 	r.mu.Unlock()
-	defer func() { r.mu.Lock(); delete(r.running, key); delete(r.cancelled, key); r.mu.Unlock() }()
+	defer func() {
+		r.mu.Lock()
+		delete(r.running, key)
+		delete(r.cancelled, key)
+		delete(r.cancels, key)
+		r.mu.Unlock()
+	}()
 	if err = cmd.Start(); err != nil {
 		return Result{}, err
 	}
@@ -126,7 +137,7 @@ func (r *Runner) Run(ctx context.Context, key string, inv Invocation) (Result, e
 	cancelledBeforeStart := r.cancelled[key]
 	r.mu.Unlock()
 	if cancelledBeforeStart && cmd.Process != nil {
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+		_ = terminateProcessTree(cmd, false)
 	}
 	wait := make(chan error, 1)
 	go func() { wait <- cmd.Wait() }()
@@ -134,11 +145,11 @@ func (r *Runner) Run(ctx context.Context, key string, inv Invocation) (Result, e
 	select {
 	case waitErr = <-wait:
 	case <-ctx.Done():
-		_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+		_ = terminateProcessTree(cmd, false)
 		select {
 		case waitErr = <-wait:
 		case <-time.After(2 * time.Second):
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+			_ = terminateProcessTree(cmd, true)
 			waitErr = <-wait
 		}
 	}
@@ -168,28 +179,50 @@ func (r *Runner) Run(ctx context.Context, key string, inv Invocation) (Result, e
 func (r *Runner) Cancel(key string) error {
 	r.mu.Lock()
 	cmd := r.running[key]
+	cancel := r.cancels[key]
 	if cmd != nil {
 		r.cancelled[key] = true
 	}
 	r.mu.Unlock()
+	// Cancelling the invocation context is important for non-worker runs (for
+	// example a requirement discussion served by an HTTP handler). It lets Run
+	// perform its TERM -> bounded wait -> KILL escalation instead of leaving an
+	// uncooperative CLI process alive after the server stops accepting requests.
+	if cancel != nil {
+		cancel()
+	}
 	if cmd == nil || cmd.Process == nil {
 		return nil
 	}
-	return syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+	return terminateProcessTree(cmd, false)
 }
+
+// CancelAll terminates every process group started by this backend. It is used
+// for process shutdown, including discussion runs which do not have a queue job.
+func (r *Runner) CancelAll() {
+	r.CancelPrefix("")
+}
+
 func (r *Runner) CancelPrefix(prefix string) {
 	r.mu.Lock()
 	cmds := []*exec.Cmd{}
+	cancels := []context.CancelFunc{}
 	for key, cmd := range r.running {
 		if strings.HasPrefix(key, prefix) {
 			cmds = append(cmds, cmd)
+			if cancel := r.cancels[key]; cancel != nil {
+				cancels = append(cancels, cancel)
+			}
 			r.cancelled[key] = true
 		}
 	}
 	r.mu.Unlock()
+	for _, cancel := range cancels {
+		cancel()
+	}
 	for _, cmd := range cmds {
 		if cmd != nil && cmd.Process != nil {
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGTERM)
+			_ = terminateProcessTree(cmd, false)
 		}
 	}
 }

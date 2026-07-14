@@ -98,6 +98,24 @@ func (s *Store) DeferJobForWorkspace(ctx context.Context, id uuid.UUID, workerID
 	return tx.Commit(ctx)
 }
 
+// ReleaseLeasedJob is used when graceful shutdown starts after a worker has
+// claimed a job but before it begins execution. Releasing it does not consume
+// a retry attempt and preserves the task's queued state.
+func (s *Store) ReleaseLeasedJob(ctx context.Context, id uuid.UUID, workerID string) error {
+	tag, err := s.Pool.Exec(ctx, `UPDATE jobs
+		SET status='queued',worker_id=NULL,lease_expires_at=NULL,run_after=now(),
+			attempt=GREATEST(attempt-1,0),updated_at=now(),version=version+1
+		WHERE id=$1 AND worker_id=$2 AND status='leased'`, id, workerID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return domain.ErrNotFound
+	}
+	_, err = s.Pool.Exec(ctx, `SELECT pg_notify('specrelay_jobs',$1)`, id.String())
+	return err
+}
+
 func (s *Store) CompleteJob(ctx context.Context, id uuid.UUID, workerID string) error {
 	tag, err := s.Pool.Exec(ctx, `UPDATE jobs SET status='succeeded',lease_expires_at=NULL,updated_at=now(),version=version+1 WHERE id=$1 AND worker_id=$2 AND status='running'`, id, workerID)
 	if err != nil {
@@ -145,22 +163,177 @@ func (s *Store) FailJob(ctx context.Context, j domain.Job, workerID, message str
 	}
 	return tx.Commit(ctx)
 }
+
+// Runtime instances heartbeat every lease-heartbeat interval. A missing or
+// stale instance is evidence that its host process is gone, so recovery does
+// not need to wait for the full workspace lease to expire after a crash.
+// Do not decide that an instance is dead sooner than this floor. Each instance
+// also persists its heartbeat cadence, so installations with a deliberately
+// slower lease heartbeat do not interrupt another live desktop instance.
+const minimumRuntimeInstanceStaleAfter = 30 * time.Second
+
 func (s *Store) RecoverJobs(ctx context.Context) error {
+	const recoveryReason = "backend instance stopped unexpectedly; execution was interrupted"
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback(ctx)
-	_, err = tx.Exec(ctx, `UPDATE jobs SET status='queued',worker_id=NULL,lease_expires_at=NULL,run_after=now(),updated_at=now(),version=version+1 WHERE status IN ('leased','running') AND lease_expires_at<now()`)
+
+	rows, err := tx.Query(ctx, `
+		SELECT j.id,j.job_type,j.aggregate_id,coalesce(t.status,'')
+		FROM jobs j
+		LEFT JOIN plan_tasks t ON j.job_type='task.execute' AND t.id=j.aggregate_id
+		LEFT JOIN runtime_instances owner
+			ON split_part(j.worker_id, ':', 1)=owner.instance_id
+		WHERE j.status IN ('leased','running')
+			AND (
+				j.lease_expires_at<now()
+				OR (
+					position(':' in coalesce(j.worker_id,''))>0
+					AND (
+						owner.instance_id IS NULL
+						OR owner.heartbeat_at < now() - (
+							GREATEST(owner.heartbeat_interval_ms * 3, $1::bigint) * interval '1 millisecond'
+						)
+					)
+				)
+			)
+		FOR UPDATE OF j`, minimumRuntimeInstanceStaleAfter.Milliseconds())
 	if err != nil {
 		return err
 	}
-	_, err = tx.Exec(ctx, `DELETE FROM workspace_leases WHERE expires_at<now()`)
-	if err != nil {
+	queuedJobs := make([]uuid.UUID, 0)
+	interruptedJobs := make([]uuid.UUID, 0)
+	taskIDs := make([]uuid.UUID, 0)
+	recoveredJobs := make([]uuid.UUID, 0)
+	for rows.Next() {
+		var jobID, aggregateID uuid.UUID
+		var jobType, taskStatus string
+		if err = rows.Scan(&jobID, &jobType, &aggregateID, &taskStatus); err != nil {
+			rows.Close()
+			return err
+		}
+		recoveredJobs = append(recoveredJobs, jobID)
+		if jobType == "task.execute" && taskStatus == "running" {
+			interruptedJobs = append(interruptedJobs, jobID)
+			taskIDs = append(taskIDs, aggregateID)
+		} else {
+			// A task may have been leased immediately before StartTask. It has not
+			// changed the workspace yet, so it remains safe to put back on queue.
+			queuedJobs = append(queuedJobs, jobID)
+		}
+	}
+	if err = rows.Err(); err != nil {
+		rows.Close()
 		return err
+	}
+	rows.Close()
+
+	if len(queuedJobs) > 0 {
+		if _, err = tx.Exec(ctx, `UPDATE jobs
+			SET status='queued',worker_id=NULL,lease_expires_at=NULL,run_after=now(),
+				attempt=GREATEST(attempt-1,0),last_error=$2,updated_at=now(),version=version+1
+			WHERE id=ANY($1)`, queuedJobs, recoveryReason); err != nil {
+			return err
+		}
+		for _, id := range queuedJobs {
+			if _, err = tx.Exec(ctx, `SELECT pg_notify('specrelay_jobs',$1)`, id.String()); err != nil {
+				return err
+			}
+		}
+	}
+	if len(interruptedJobs) > 0 {
+		if _, err = tx.Exec(ctx, `UPDATE jobs
+			SET status='cancelled',worker_id=NULL,lease_expires_at=NULL,last_error=$2,updated_at=now(),version=version+1
+			WHERE id=ANY($1)`, interruptedJobs, recoveryReason); err != nil {
+			return err
+		}
+	}
+	if len(recoveredJobs) > 0 {
+		if _, err = tx.Exec(ctx, `UPDATE agent_runs
+			SET status='cancelled',termination_reason=$2,finished_at=now(),updated_at=now(),version=version+1
+			WHERE job_id=ANY($1) AND status='running'`, recoveredJobs, recoveryReason); err != nil {
+			return err
+		}
+	}
+	// Requirement discussions have no queue job. Reconcile only owners that
+	// are absent or stale; a separate live desktop instance remains untouched.
+	if _, err = tx.Exec(ctx, `UPDATE agent_runs run
+		SET status='cancelled',termination_reason=$1,finished_at=now(),updated_at=now(),version=version+1
+		WHERE run.status='running'
+			AND run.owner_instance_id<>''
+			AND NOT EXISTS (
+				SELECT 1 FROM runtime_instances owner
+				WHERE owner.instance_id=run.owner_instance_id
+					AND owner.heartbeat_at >= now() - (
+						GREATEST(owner.heartbeat_interval_ms * 3, $2::bigint) * interval '1 millisecond'
+					)
+			)`, recoveryReason, minimumRuntimeInstanceStaleAfter.Milliseconds()); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, `DELETE FROM workspace_leases WHERE expires_at<now() OR job_id=ANY($1)`, interruptedJobs); err != nil {
+		return err
+	}
+	// The table is only a liveness aid; old rows have no diagnostic value once
+	// their associated runs are reconciled.
+	if _, err = tx.Exec(ctx, `DELETE FROM runtime_instances WHERE heartbeat_at<now()-interval '24 hours'`); err != nil {
+		return err
+	}
+
+	type taskChange struct {
+		id, projectID, planID uuid.UUID
+		version               int64
+	}
+	changes := make([]taskChange, 0)
+	if len(taskIDs) > 0 {
+		updated, queryErr := tx.Query(ctx, `UPDATE plan_tasks
+			SET status='pending',started_at=NULL,finished_at=NULL,updated_at=now(),version=version+1
+			WHERE id=ANY($1) AND status='running'
+			RETURNING id,project_id,plan_id,version`, taskIDs)
+		if queryErr != nil {
+			return queryErr
+		}
+		for updated.Next() {
+			var change taskChange
+			if queryErr = updated.Scan(&change.id, &change.projectID, &change.planID, &change.version); queryErr != nil {
+				updated.Close()
+				return queryErr
+			}
+			changes = append(changes, change)
+		}
+		if queryErr = updated.Err(); queryErr != nil {
+			updated.Close()
+			return queryErr
+		}
+		updated.Close()
+	}
+	planIDs := make(map[uuid.UUID]uuid.UUID)
+	for _, change := range changes {
+		if _, err = insertEvent(ctx, tx, NewEvent{ProjectID: &change.projectID, Type: "task.cancelled", AggregateType: "task", AggregateID: change.id, ResourceVersion: change.version, Payload: mustJSON(map[string]any{"message": recoveryReason})}); err != nil {
+			return err
+		}
+		planIDs[change.planID] = change.projectID
+	}
+	for planID, projectID := range planIDs {
+		var version int64
+		err = tx.QueryRow(ctx, `UPDATE plans
+			SET status='blocked',updated_at=now(),version=version+1
+			WHERE id=$1 AND status IN ('running','validating')
+			RETURNING version`, planID).Scan(&version)
+		if errors.Is(err, pgx.ErrNoRows) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if _, err = insertEvent(ctx, tx, NewEvent{ProjectID: &projectID, Type: "plan.blocked", AggregateType: "plan", AggregateID: planID, ResourceVersion: version, Payload: mustJSON(map[string]any{"reason": recoveryReason})}); err != nil {
+			return err
+		}
 	}
 	return tx.Commit(ctx)
 }
+
 func (s *Store) AcquireWorkspaceLease(ctx context.Context, projectID, jobID uuid.UUID, workspace, workerID string, duration time.Duration) error {
 	id := uuid.New()
 	tag, err := s.Pool.Exec(ctx, `INSERT INTO workspace_leases(id,project_id,workspace_path_normalized,worker_id,job_id,expires_at) VALUES($1,$2,$3,$4,$5,now()+$6::interval) ON CONFLICT(workspace_path_normalized) DO UPDATE SET id=EXCLUDED.id,project_id=EXCLUDED.project_id,worker_id=EXCLUDED.worker_id,job_id=EXCLUDED.job_id,heartbeat_at=now(),expires_at=EXCLUDED.expires_at,updated_at=now(),version=workspace_leases.version+1 WHERE workspace_leases.expires_at<now() OR workspace_leases.job_id=EXCLUDED.job_id`, id, projectID, workspace, workerID, jobID, duration.String())

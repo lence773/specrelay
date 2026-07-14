@@ -86,7 +86,7 @@ func (s *Service) DiscussRequirement(ctx context.Context, projectID uuid.UUID, i
 	logPath := filepath.Join(s.DataDir, "logs", "discussion-"+runID.String()+".log")
 	inv := adapter.Discuss(command, args, project.WorkspacePath, prompt, 0, logPath)
 	inv.Env = allowedEnv(settings.AllowedEnv)
-	_ = s.Store.StartAgentRun(ctx, repository.AgentRunStart{ID: runID, ProjectID: project.ID, Provider: adapter.Name(), CommandSummary: command + "（需求讨论）", LogPath: logPath})
+	_ = s.Store.StartAgentRun(ctx, repository.AgentRunStart{ID: runID, ProjectID: project.ID, Provider: adapter.Name(), CommandSummary: command + "（需求讨论）", LogPath: logPath, OwnerInstanceID: s.InstanceID})
 	s.instrumentInvocation(&inv, runID)
 	result, runErr := s.Runner.Run(ctx, project.ID.String()+":discussion:"+runID.String(), inv)
 	finishRun(s.Store, runID, result, runErr)

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -63,6 +64,46 @@ func TestRunnerWithoutTimeoutStillHonorsParentCancellation(t *testing.T) {
 	result, err := NewRunner().Run(ctx, "parent-cancel", Invocation{Provider: "fake", Command: "sh", Args: []string{"-c", "sleep 5"}, Dir: dir, Timeout: 0, LogPath: filepath.Join(dir, "run.log")})
 	if err == nil || !result.TimedOut {
 		t.Fatalf("result=%+v err=%v", result, err)
+	}
+}
+
+func TestRunnerCancelAllEscalatesForUncooperativeProcess(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("process-group signalling is Unix-specific")
+	}
+	dir := t.TempDir()
+	runner := NewRunner()
+	started := make(chan struct{})
+	done := make(chan struct{})
+	var result Result
+	var runErr error
+	go func() {
+		defer close(done)
+		result, runErr = runner.Run(context.Background(), "discussion", Invocation{
+			Provider: "fake",
+			Command:  "sh",
+			// Ignore TERM in the shell so the runner must use its two-second
+			// escalation path. This mirrors an HTTP discussion run during app exit.
+			Args:    []string{"-c", "trap '' TERM; while :; do sleep 1; done"},
+			Dir:     dir,
+			LogPath: filepath.Join(dir, "run.log"),
+			OnStart: func(int) { close(started) },
+		})
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("runner did not start the CLI")
+	}
+	runner.CancelAll()
+	select {
+	case <-done:
+	case <-time.After(4 * time.Second):
+		t.Fatal("CancelAll did not terminate the uncooperative CLI process group")
+	}
+	if !errors.Is(runErr, context.Canceled) || !result.Cancelled {
+		t.Fatalf("result=%+v err=%v", result, runErr)
 	}
 }
 

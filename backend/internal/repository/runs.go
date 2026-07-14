@@ -13,10 +13,11 @@ type AgentRunStart struct {
 	ID, ProjectID                     uuid.UUID
 	JobID, TaskID                     *uuid.UUID
 	Provider, CommandSummary, LogPath string
+	OwnerInstanceID                   string
 }
 
 func (s *Store) StartAgentRun(ctx context.Context, p AgentRunStart) error {
-	_, err := s.Pool.Exec(ctx, `INSERT INTO agent_runs(id,project_id,job_id,task_id,provider,command_summary,status,log_path) VALUES($1,$2,$3,$4,$5,$6,'running',$7)`, p.ID, p.ProjectID, p.JobID, p.TaskID, p.Provider, p.CommandSummary, p.LogPath)
+	_, err := s.Pool.Exec(ctx, `INSERT INTO agent_runs(id,project_id,job_id,task_id,provider,command_summary,status,log_path,owner_instance_id) VALUES($1,$2,$3,$4,$5,$6,'running',$7,$8)`, p.ID, p.ProjectID, p.JobID, p.TaskID, p.Provider, p.CommandSummary, p.LogPath, p.OwnerInstanceID)
 	return err
 }
 func (s *Store) SetAgentRunPID(ctx context.Context, id uuid.UUID, pid int) error {

@@ -20,19 +20,56 @@ type Pool struct {
 	Concurrency                    int
 	LeaseDuration, Heartbeat, Poll time.Duration
 	Logger                         *slog.Logger
+	InstanceID                     string
 	wake                           chan struct{}
 	wg                             sync.WaitGroup
+	lifecycle                      sync.RWMutex
+	draining                       bool
+	stop                           context.CancelFunc
 }
 
-func New(store *repository.Store, service *app.Service, concurrency int, lease, heartbeat, poll time.Duration, logger *slog.Logger) *Pool {
-	return &Pool{Store: store, Service: service, Concurrency: concurrency, LeaseDuration: lease, Heartbeat: heartbeat, Poll: poll, Logger: logger, wake: make(chan struct{}, 1)}
+func New(store *repository.Store, service *app.Service, concurrency int, lease, heartbeat, poll time.Duration, logger *slog.Logger, instanceID string) *Pool {
+	if instanceID == "" {
+		instanceID = "backend"
+	}
+	return &Pool{Store: store, Service: service, Concurrency: concurrency, LeaseDuration: lease, Heartbeat: heartbeat, Poll: poll, Logger: logger, InstanceID: instanceID, wake: make(chan struct{}, 1)}
+}
+
+// BeginDraining prevents workers from claiming or starting additional jobs.
+// It intentionally does not cancel active CLI processes; the caller first
+// persists their interrupted state, then calls Stop to cancel the worker context.
+func (p *Pool) BeginDraining() {
+	p.lifecycle.Lock()
+	p.draining = true
+	p.lifecycle.Unlock()
+}
+
+func (p *Pool) Stop() {
+	p.lifecycle.RLock()
+	stop := p.stop
+	p.lifecycle.RUnlock()
+	if stop != nil {
+		stop()
+	}
+}
+
+func (p *Pool) isDraining() bool {
+	p.lifecycle.RLock()
+	defer p.lifecycle.RUnlock()
+	return p.draining
 }
 func (p *Pool) Start(ctx context.Context) {
+	ctx, stop := context.WithCancel(ctx)
+	p.lifecycle.Lock()
+	p.stop = stop
+	p.lifecycle.Unlock()
 	p.wg.Add(1)
 	go p.listen(ctx)
+	p.wg.Add(1)
+	go p.recover(ctx)
 	for i := 0; i < p.Concurrency; i++ {
 		p.wg.Add(1)
-		go p.worker(ctx, fmt.Sprintf("worker-%d", i+1))
+		go p.worker(ctx, fmt.Sprintf("%s:worker-%d", p.InstanceID, i+1))
 	}
 }
 func (p *Pool) Wait() { p.wg.Wait() }
@@ -70,20 +107,66 @@ func (p *Pool) listen(ctx context.Context) {
 		conn.Release()
 	}
 }
+
+// recover periodically reconciles work owned by a crashed backend instance.
+// It is deliberately separate from job claiming: a task whose host process
+// disappeared must become visibly blocked even when the queue is otherwise idle.
+func (p *Pool) recover(ctx context.Context) {
+	defer p.wg.Done()
+	interval := p.Heartbeat
+	if interval <= 0 {
+		interval = 10 * time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if p.isDraining() {
+				return
+			}
+			if err := p.Store.RecoverJobs(ctx); err != nil && ctx.Err() == nil {
+				p.Logger.Warn("recover interrupted jobs failed", "error", err)
+			}
+		}
+	}
+}
+
 func (p *Pool) worker(ctx context.Context, workerID string) {
 	defer p.wg.Done()
 	ticker := time.NewTicker(p.Poll)
 	defer ticker.Stop()
 	for {
-		if ctx.Err() != nil {
+		if ctx.Err() != nil || p.isDraining() {
 			return
 		}
 		job, err := p.Store.ClaimJob(ctx, workerID, p.LeaseDuration)
 		if err == nil {
+			// Hold the lifecycle read lock through the leased->running transition.
+			// BeginDraining waits for this short critical section, so shutdown
+			// reconciliation can never miss a job that is about to execute.
+			p.lifecycle.RLock()
+			if p.draining {
+				p.lifecycle.RUnlock()
+				if releaseErr := p.Store.ReleaseLeasedJob(ctx, job.ID, workerID); releaseErr != nil && !errors.Is(releaseErr, domain.ErrNotFound) {
+					p.Logger.Error("release job while draining failed", "job", job.ID, "error", releaseErr)
+				}
+				return
+			}
+			job, err = p.Store.MarkJobRunning(ctx, job.ID, workerID)
+			p.lifecycle.RUnlock()
+			if err != nil {
+				if !errors.Is(err, domain.ErrNotFound) && ctx.Err() == nil {
+					p.Logger.Warn("mark job running failed", "job", job.ID, "error", err)
+				}
+				continue
+			}
 			p.run(ctx, workerID, job)
 			continue
 		}
-		if !errors.Is(err, pgx.ErrNoRows) {
+		if !errors.Is(err, pgx.ErrNoRows) && ctx.Err() == nil {
 			p.Logger.Warn("job claim failed", "worker", workerID, "error", err)
 		}
 		select {
@@ -95,11 +178,6 @@ func (p *Pool) worker(ctx context.Context, workerID string) {
 	}
 }
 func (p *Pool) run(parent context.Context, workerID string, job domain.Job) {
-	job, err := p.Store.MarkJobRunning(parent, job.ID, workerID)
-	if err != nil {
-		p.Logger.Warn("mark job running failed", "job", job.ID, "error", err)
-		return
-	}
 	ctx, cancel := context.WithCancel(parent)
 	defer cancel()
 	renewLease := p.Store.RenewJobLease
@@ -126,7 +204,7 @@ func (p *Pool) run(parent context.Context, workerID string, job domain.Job) {
 			}
 		}
 	}()
-	err = p.Service.ExecuteJob(ctx, workerID, job)
+	err := p.Service.ExecuteJob(ctx, workerID, job)
 	cancel()
 	<-heartbeatDone
 	if err == nil {

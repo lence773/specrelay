@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/google/uuid"
 )
 
 type Config struct {
@@ -22,6 +24,8 @@ type Config struct {
 	PublicDir         string
 	AccessToken       string
 	MCPToken          string
+	InstanceID        string
+	ShutdownToken     string
 }
 
 func Load() (Config, error) {
@@ -29,7 +33,7 @@ func Load() (Config, error) {
 		DatabaseURL: strings.TrimSpace(os.Getenv("DATABASE_URL")), HTTPAddr: env("HTTP_ADDR", "127.0.0.1:43846"),
 		DataDir: env("DATA_DIR", defaultDataDir()), WorkerConcurrency: envInt("WORKER_CONCURRENCY", 2),
 		LeaseDuration: envDuration("WORKSPACE_LEASE_DURATION", 30*time.Second), LeaseHeartbeat: envDuration("WORKSPACE_LEASE_HEARTBEAT", 10*time.Second),
-		PollInterval: envDuration("JOB_POLL_INTERVAL", 5*time.Second), PublicDir: strings.TrimSpace(os.Getenv("PUBLIC_DIR")), AccessToken: strings.TrimSpace(os.Getenv("ACCESS_TOKEN")), MCPToken: strings.TrimSpace(os.Getenv("MCP_TOKEN")),
+		PollInterval: envDuration("JOB_POLL_INTERVAL", 5*time.Second), PublicDir: strings.TrimSpace(os.Getenv("PUBLIC_DIR")), AccessToken: strings.TrimSpace(os.Getenv("ACCESS_TOKEN")), MCPToken: strings.TrimSpace(os.Getenv("MCP_TOKEN")), InstanceID: env("INSTANCE_ID", uuid.NewString()), ShutdownToken: strings.TrimSpace(os.Getenv("SHUTDOWN_TOKEN")),
 	}
 	if cfg.DatabaseURL == "" {
 		return Config{}, errors.New("DATABASE_URL is required")

@@ -132,7 +132,7 @@ docker compose -f deploy/docker-compose.yml up -d --wait postgres
 ./scripts/dev/start-backend.sh
 ```
 
-桌面版也沿用这一边界：Tauri 在宿主机启动随包附带的 Go 后端，仅调用 Docker Compose 启动专用 PostgreSQL 服务。关闭桌面窗口只结束后端，绝不执行 `docker compose down` 或删除数据库卷。
+桌面版也沿用这一边界：Tauri 在宿主机启动随包附带的 Go 后端，但不再携带、调用或管理 Docker/PostgreSQL。首次启动由用户在桌面端配置一个外部 PostgreSQL 连接；后端连接成功后自动运行迁移。关闭桌面窗口只结束后端，不会对已配置的数据库服务执行任何停止、删除或 Docker 操作。
 
 ## 测试
 

@@ -29,10 +29,15 @@ type Service struct {
 	DataDir       string
 	LeaseDuration time.Duration
 	Logger        *slog.Logger
+	InstanceID    string
 }
 
-func New(store *repository.Store, runner *agent.Runner, dataDir string, lease time.Duration, logger *slog.Logger) *Service {
-	return &Service{Store: store, Runner: runner, DataDir: dataDir, LeaseDuration: lease, Logger: logger}
+func New(store *repository.Store, runner *agent.Runner, dataDir string, lease time.Duration, logger *slog.Logger, instanceID ...string) *Service {
+	owner := ""
+	if len(instanceID) > 0 {
+		owner = strings.TrimSpace(instanceID[0])
+	}
+	return &Service{Store: store, Runner: runner, DataDir: dataDir, LeaseDuration: lease, Logger: logger, InstanceID: owner}
 }
 func (s *Service) CreateProject(ctx context.Context, name, description, workspace string) (domain.Project, error) {
 	workspace = strings.TrimSpace(workspace)
@@ -338,7 +343,7 @@ Description: %s
 	inv := adapter.GeneratePlan(command, args, project.WorkspacePath, prompt, 0, logPath)
 	inv.Env = allowedEnv(settings.AllowedEnv)
 	runID := uuid.New()
-	_ = s.Store.StartAgentRun(ctx, repository.AgentRunStart{ID: runID, ProjectID: project.ID, JobID: &job.ID, Provider: adapter.Name(), CommandSummary: command, LogPath: logPath})
+	_ = s.Store.StartAgentRun(ctx, repository.AgentRunStart{ID: runID, ProjectID: project.ID, JobID: &job.ID, Provider: adapter.Name(), CommandSummary: command, LogPath: logPath, OwnerInstanceID: s.InstanceID})
 	s.instrumentInvocation(&inv, runID)
 	result, runErr := s.Runner.Run(ctx, project.ID.String()+":"+job.ID.String(), inv)
 	finishRun(s.Store, runID, result, runErr)
@@ -516,7 +521,7 @@ func (s *Service) executeTask(ctx context.Context, job domain.Job, project domai
 	}
 
 	runID := uuid.New()
-	_ = s.Store.StartAgentRun(ctx, repository.AgentRunStart{ID: runID, ProjectID: project.ID, JobID: &job.ID, TaskID: &task.ID, Provider: provider, CommandSummary: commandSummary, LogPath: logPath})
+	_ = s.Store.StartAgentRun(ctx, repository.AgentRunStart{ID: runID, ProjectID: project.ID, JobID: &job.ID, TaskID: &task.ID, Provider: provider, CommandSummary: commandSummary, LogPath: logPath, OwnerInstanceID: s.InstanceID})
 	s.instrumentInvocation(&inv, runID)
 	result, runErr := s.Runner.Run(ctx, project.ID.String()+":"+job.ID.String(), inv)
 	finishRun(s.Store, runID, result, runErr)
@@ -814,4 +819,11 @@ func classifyRunError(result agent.Result, err error) error {
 		return err
 	}
 	return Retryable(err)
+}
+
+// PrepareForShutdown persists the business state before the worker context is
+// cancelled. This ordering prevents a desktop exit from leaving a task or an
+// agent run displayed as running after its CLI process has been terminated.
+func (s *Service) PrepareForShutdown(ctx context.Context) error {
+	return s.Store.ReconcileInstanceShutdown(ctx, s.InstanceID)
 }

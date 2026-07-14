@@ -15,7 +15,21 @@ import { ProjectSidebar } from './features/projects/ProjectSidebar'
 import { SettingsView } from './features/settings/SettingsView'
 
 type Tab='overview'|'intakes'|'plans'|'runs'|'events'|'settings'
+type TauriBridge={core?:{invoke:(command:string,payload?:Record<string,unknown>)=>Promise<unknown>}}
 const EVENT_PAGE_LIMIT=100
+
+function invokeDesktop(command:string){
+  const bridge=(window as Window&{__TAURI__?:TauriBridge}).__TAURI__
+  return bridge?.core?.invoke(command)
+}
+
+function WindowControls(){
+  return <div className="window-controls">
+    <button type="button" title="最小化" aria-label="最小化" onClick={()=>void invokeDesktop('minimize_window')}>−</button>
+    <button type="button" title="最大化或还原" aria-label="最大化或还原" onClick={()=>void invokeDesktop('toggle_maximize_window')}>□</button>
+    <button type="button" className="close" title="关闭" aria-label="关闭" onClick={()=>void invokeDesktop('close_window')}>×</button>
+  </div>
+}
 
 const nav:[Tab,string,React.ReactNode][]=[
   ['overview','概览',<Dashboard/>],
@@ -70,20 +84,22 @@ export function App(){
 
   return <div className="app-shell">
     <ProjectSidebar projects={projects.data??[]} selected={selected} onSelect={id=>{setSelected(id);setTab('overview')}} onCreate={()=>setCreateOpen(true)}/>
-    <main className={project?'workspace-main':undefined}>{project?<>
-      <header className="topbar">
-        <nav>{nav.map(([id,label,icon])=><button key={id} className={tab===id?'active':''} onClick={()=>setTab(id)}>{icon}<span>{label}</span>{id==='intakes'&&counts.intakes>0&&<b>{counts.intakes}</b>}{id==='plans'&&counts.plans>0&&<b>{counts.plans}</b>}</button>)}</nav>
-        <button className={`automation ${project.automationEnabled?'running':''}`} disabled={automation.isPending} title={project.automationEnabled ? '停止后会取消排队中的自动任务' : '启动后会自动生成计划，并执行所有已就绪计划'} onClick={()=>automation.mutate(!project.automationEnabled)}>{project.automationEnabled?<><Stop/> 停止自动化</>:<><Play/> 启动自动化</>}</button>
+    <main className={project?'workspace-main':undefined}>
+      <header className={`topbar ${project?'':'empty-topbar'}`}>
+        {project?<nav>{nav.map(([id,label,icon])=><button key={id} className={tab===id?'active':''} onClick={()=>setTab(id)}>{icon}<span>{label}</span>{id==='intakes'&&counts.intakes>0&&<b>{counts.intakes}</b>}{id==='plans'&&counts.plans>0&&<b>{counts.plans}</b>}</button>)}</nav>:<strong className="topbar-title">SpecRelay</strong>}
+        <div className="titlebar-drag-region" data-tauri-drag-region aria-hidden="true" />
+        {project&&<button className={`automation ${project.automationEnabled?'running':''}`} disabled={automation.isPending} title={project.automationEnabled ? '停止后会取消排队中的自动任务' : '启动后会自动生成计划，并执行所有已就绪计划'} onClick={()=>automation.mutate(!project.automationEnabled)}>{project.automationEnabled?<><Stop/> 停止自动化</>:<><Play/> 启动自动化</>}</button>}
+        <WindowControls/>
       </header>
-      <div className="content">
+      {project?<div className="content">
         {tab==='overview'&&<Overview project={project} intakes={intakes.data??[]} plans={plans.data??[]} events={recentEvents} onNavigate={value=>setTab(value as Tab)}/>}
         <div hidden={tab!=='intakes'}><IntakesView key={project.id} project={project} intakes={intakes.data??[]}/></div>
-        {tab==='plans'&&<PlansView project={project} plans={plans.data??[]}/>} 
-        {tab==='runs'&&<RunsView project={project}/>} 
+        {tab==='plans'&&<PlansView project={project} plans={plans.data??[]}/>}
+        {tab==='runs'&&<RunsView project={project}/>}
         {tab==='events'&&<EventsView events={[...(eventPage.data?.items??[])].reverse()}/>}
-        {tab==='settings'&&<SettingsView project={project}/>} 
-      </div>
-    </>:<div className="welcome"><Empty title="创建第一个项目" body="将 SpecRelay 绑定到可信的本地工作目录，配置智能体，然后把需求转化为经过验证的代码。" action={<button className="button primary" onClick={()=>setCreateOpen(true)}>创建项目</button>}/></div>}</main>
+        {tab==='settings'&&<SettingsView project={project}/>}
+      </div>:<div className="welcome"><Empty title="创建第一个项目" body="将 SpecRelay 绑定到可信的本地工作目录，配置智能体，然后把需求转化为经过验证的代码。" action={<button className="button primary" onClick={()=>setCreateOpen(true)}>创建项目</button>}/></div>}
+    </main>
     {createOpen&&<NewProjectModal onClose={()=>setCreateOpen(false)} onCreated={id=>{setSelected(id);setCreateOpen(false)}}/>}
   </div>
 }

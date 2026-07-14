@@ -22,6 +22,21 @@ if [[ -z "$target_triple" ]]; then
   exit 1
 fi
 
+if [[ -n "${TAURI_BUNDLES:-}" ]]; then
+  tauri_bundles="$TAURI_BUNDLES"
+elif [[ "$target_triple" == *-windows-* ]]; then
+  tauri_bundles="nsis"
+elif [[ "$target_triple" == *-apple-darwin ]]; then
+  tauri_bundles="dmg"
+else
+  tauri_bundles="deb"
+fi
+
+sidecar="desktop/src-tauri/binaries/specrelay-${target_triple}"
+if [[ "$target_triple" == *-windows-* ]]; then
+  sidecar+=".exe"
+fi
+
 printf 'Building frontend…\n'
 npm --prefix frontend ci
 npm --prefix frontend run build
@@ -31,10 +46,12 @@ mkdir -p desktop/src-tauri/binaries desktop/src-tauri/resources/frontend
 (
   cd backend
   CGO_ENABLED=0 "$go_bin" build -trimpath -ldflags='-s -w' \
-    -o "../desktop/src-tauri/binaries/specrelay-${target_triple}" \
+    -o "../$sidecar" \
     ./cmd/specrelay
 )
-chmod +x "desktop/src-tauri/binaries/specrelay-${target_triple}"
+if [[ "$target_triple" != *-windows-* ]]; then
+  chmod +x "$sidecar"
+fi
 
 # The desktop shell opens the Go server's static site so browser requests remain
 # same-origin. Keep generated frontend assets out of git; this script recreates
@@ -42,9 +59,9 @@ chmod +x "desktop/src-tauri/binaries/specrelay-${target_triple}"
 find desktop/src-tauri/resources/frontend -mindepth 1 -maxdepth 1 ! -name .gitkeep -exec rm -rf {} +
 cp -a frontend/dist/. desktop/src-tauri/resources/frontend/
 
-printf 'Building desktop installer…\n'
+printf 'Building desktop bundles (%s)…\n' "$tauri_bundles"
 npm --prefix desktop ci
-npm --prefix desktop exec tauri build -- --bundles deb
+npm --prefix desktop exec tauri build -- --bundles "$tauri_bundles"
 
-printf '\nDesktop installer created under:\n  %s\n' \
-  "$root_dir/desktop/src-tauri/target/release/bundle/deb"
+printf '\nDesktop bundles created under:\n  %s\n' \
+  "$root_dir/desktop/src-tauri/target/release/bundle"
