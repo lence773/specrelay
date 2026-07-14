@@ -1,3 +1,12 @@
+// A Tauri desktop app must be linked as a GUI process on Windows. Without
+// this, Windows allocates a visible console for SpecRelay.exe even though it
+// is a graphical app. Keep consoles enabled for debug builds so `tauri dev`
+// still has useful diagnostics.
+#![cfg_attr(
+    all(target_os = "windows", not(debug_assertions)),
+    windows_subsystem = "windows"
+)]
+
 use std::{
     fs,
     io::{Read, Write},

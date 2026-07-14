@@ -1,6 +1,6 @@
 [package]
 name = "specrelay-desktop"
-version = "1.0.13"
+version = "1.0.14"
 description = "SpecRelay desktop launcher"
 authors = ["SpecRelay contributors"]
 edition = "2021"
