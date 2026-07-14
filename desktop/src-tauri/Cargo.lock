@@ -43,7 +43,7 @@ dependencies = [
 
 [[package]]
 name = "anyhow"
-version = "1.0.113"
+version = "1.0.123"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2a4385e2e34eb35d6b3efe798b9eb88096925d87726c0798709bf56d9ed84af3"
 
@@ -630,7 +630,7 @@ dependencies = [
 
 [[package]]
 name = "dtoa"
-version = "1.0.11"
+version = "1.0.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4c3cf4824e2d5f025c7b531afcb2325364084a16806f6d47fbc1f5fbd9960590"
 
@@ -2237,7 +2237,7 @@ dependencies = [
  "proc-macro-error-attr",
  "proc-macro2",
  "quote",
- "syn 1.0.119",
+ "syn 1.0.129",
  "version_check",
 ]
 
@@ -2254,7 +2254,7 @@ dependencies = [
 
 [[package]]
 name = "proc-macro2"
-version = "1.0.116"
+version = "1.0.126"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8fd00f0bb2e90d81d1044c2b32617f68fcb9fa3bb7640c23e9c748e53fb30934"
 dependencies = [
@@ -2817,7 +2817,7 @@ dependencies = [
 
 [[package]]
 name = "specrelay-desktop"
-version = "1.0.11"
+version = "1.0.12"
 dependencies = [
  "serde",
  "serde_json",
@@ -2877,7 +2877,7 @@ dependencies = [
 
 [[package]]
 name = "syn"
-version = "1.0.119"
+version = "1.0.129"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b64191b275b66ffe2469e8af2c1cfe3bafa67b529ead792a6d0160888b4237"
 dependencies = [

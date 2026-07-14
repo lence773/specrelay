@@ -68,7 +68,7 @@ export function NewProjectModal({onClose,onCreated}:{onClose:()=>void;onCreated:
           <button type="button" className="button ghost small" disabled={!listing?.parentPath||browseLoading} onClick={()=>void browse(listing?.parentPath)}>↑ 返回上级</button>
           <button type="button" className="text-button" onClick={()=>setBrowserOpen(false)}>关闭浏览器</button>
         </div>
-        {!!listing?.roots.length&&<div className="directory-roots" aria-label="可选择的磁盘和根目录"><span>存储位置</span><div>{listing.roots.map(root=><button type="button" key={root.path} className={root.path===listing.path?'active':''} disabled={browseLoading} onClick={()=>void browse(root.path)} title={root.path}>{root.name}</button>)}</div></div>}
+        {!!listing?.roots?.length&&<div className="directory-roots" aria-label="可选择的磁盘和根目录"><span>存储位置</span><div>{listing.roots.map(root=><button type="button" key={root.path} className={root.path===listing.path?'active':''} disabled={browseLoading} onClick={()=>void browse(root.path)} title={root.path}>{root.name}</button>)}</div></div>}
         {browseError&&<div className="form-error">打开目录失败：{browseError}</div>}
         <div className="directory-list">
           {browseLoading?<div className="directory-empty">正在加载目录…</div>:listing?.directories.length?listing.directories.map(directory=><button type="button" key={directory.path} onClick={()=>void browse(directory.path)} title={directory.path}><span>▸</span><strong>{directory.name}</strong><small>{directory.path}</small></button>):<div className="directory-empty">没有可读取的子目录</div>}
