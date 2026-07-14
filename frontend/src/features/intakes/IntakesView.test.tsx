@@ -145,6 +145,62 @@ describe("IntakesView tab cache", () => {
     ).toHaveValue("CLI 整理后的详细说明");
   });
 
+  it("continues the discussion session and stores it with the created requirement", async () => {
+    discussRequirement.mockResolvedValue({
+      provider: "codex",
+      sessionId: "discussion-session-001",
+      reply: "需求已经明确。",
+      ready: true,
+      title: "会话复用需求",
+      body: "需要复用 CLI 上下文。",
+    });
+    createIntake.mockResolvedValue({
+      intake: makeIntake("requirement", "open"),
+    });
+    renderIntakes([]);
+
+    fireEvent.click(screen.getByRole("button", { name: "创建需求" }));
+    fireEvent.click(screen.getByRole("button", { name: "开始讨论" }));
+    const composer = screen.getByPlaceholderText(
+      "描述你的想法，或回答 CLI 提出的澄清问题…",
+    );
+    fireEvent.change(composer, { target: { value: "请帮我整理这个需求" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送给 CLI" }));
+
+    await waitFor(() => expect(discussRequirement).toHaveBeenCalledTimes(1));
+    expect(discussRequirement).toHaveBeenLastCalledWith(project.id, {
+      title: "",
+      body: "",
+      messages: [{ role: "user", content: "请帮我整理这个需求" }],
+    });
+
+    fireEvent.change(composer, { target: { value: "补充支持任务链路" } });
+    fireEvent.click(screen.getByRole("button", { name: "发送给 CLI" }));
+    await waitFor(() => expect(discussRequirement).toHaveBeenCalledTimes(2));
+    expect(discussRequirement).toHaveBeenLastCalledWith(project.id, {
+      title: "会话复用需求",
+      body: "需要复用 CLI 上下文。",
+      sessionId: "discussion-session-001",
+      sessionProvider: "codex",
+      messages: [
+        { role: "user", content: "请帮我整理这个需求" },
+        { role: "assistant", content: "需求已经明确。" },
+        { role: "user", content: "补充支持任务链路" },
+      ],
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "保存需求" }));
+    await waitFor(() =>
+      expect(createIntake).toHaveBeenCalledWith(project.id, {
+        kind: "requirement",
+        title: "会话复用需求",
+        body: "需要复用 CLI 上下文。",
+        requirementSessionId: "discussion-session-001",
+        requirementSessionProvider: "codex",
+      }),
+    );
+  });
+
   it("keeps the attachment and requirement actions fixed above the scrollable detail content", () => {
     const requirement = makeIntake("requirement", "open");
     const feedback = makeIntake("feedback", "open");

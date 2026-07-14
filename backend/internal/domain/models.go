@@ -59,6 +59,21 @@ type Plan struct {
 	UpdatedAt      time.Time       `json:"updatedAt"`
 	Version        int64           `json:"version"`
 }
+type AgentSession struct {
+	ID             uuid.UUID  `json:"id"`
+	ProjectID      uuid.UUID  `json:"projectId"`
+	IntakeID       *uuid.UUID `json:"intakeId,omitempty"`
+	PlanID         *uuid.UUID `json:"planId,omitempty"`
+	Provider       string     `json:"provider"`
+	Purpose        string     `json:"purpose"`
+	CLISessionID   string     `json:"cliSessionId"`
+	ContextSummary string     `json:"contextSummary,omitempty"`
+	LastTaskID     *uuid.UUID `json:"lastTaskId,omitempty"`
+	Status         string     `json:"status"`
+	CreatedAt      time.Time  `json:"createdAt"`
+	UpdatedAt      time.Time  `json:"updatedAt"`
+	Version        int64      `json:"version"`
+}
 type PlanTask struct {
 	ID         uuid.UUID       `json:"id"`
 	ProjectID  uuid.UUID       `json:"projectId"`

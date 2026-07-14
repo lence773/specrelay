@@ -3,12 +3,14 @@ package app
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/uuid"
 	"github.com/lyming99/specrelay/backend/internal/agent"
@@ -227,5 +229,19 @@ func TestProbeConfiguredAgentsUsesIndependentCommandsAndKeepsPartialResults(t *t
 	}
 	if settings.AgentProvider != "not-a-probe-default" || settings.Version != originalVersion {
 		t.Fatalf("probe mutated project business defaults: provider=%q version=%d", settings.AgentProvider, settings.Version)
+	}
+}
+
+func TestSessionHelpersPreserveRecentExecutionState(t *testing.T) {
+	long := strings.Repeat("中文上下文", 6000)
+	truncated := truncateSessionSummary(long)
+	if !strings.Contains(truncated, "[上下文快照已截断]") || !utf8.ValidString(truncated) {
+		t.Fatalf("unexpected truncation result: %q", truncated[len(truncated)-64:])
+	}
+	if !isSessionUnavailable(agent.Result{Output: []byte("error: session not found")}, errors.New("CLI failed")) {
+		t.Fatal("expected unavailable session to be recognized")
+	}
+	if isSessionUnavailable(agent.Result{}, errors.New("network unreachable")) {
+		t.Fatal("unexpected unavailable-session classification")
 	}
 }

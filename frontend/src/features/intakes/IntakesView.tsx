@@ -98,6 +98,9 @@ export function IntakesView({
   const [existingPlanProvider, setExistingPlanProvider] =
     useState<ProviderChoice>();
   const [discussionReady, setDiscussionReady] = useState(false);
+  const [discussionCLISessionID, setDiscussionCLISessionID] = useState<string>();
+  const [discussionSessionProvider, setDiscussionSessionProvider] =
+    useState<CLIProvider>();
   const discussionSession = useRef(0);
   const fileRef = useRef<HTMLInputElement>(null);
 
@@ -135,6 +138,8 @@ export function IntakesView({
     setDiscussionInput("");
     setDiscussionProvider(undefined);
     setDiscussionReady(false);
+    setDiscussionCLISessionID(undefined);
+    setDiscussionSessionProvider(undefined);
     setDiscussionOpen(false);
   };
   const clearCreateDraft = () => {
@@ -151,7 +156,17 @@ export function IntakesView({
       const input: IntakeInput =
         kind === "feedback"
           ? { kind, title, body, parentIntakeId: feedbackParentID }
-          : { kind, title, body };
+          : {
+              kind,
+              title,
+              body,
+              ...(discussionCLISessionID && discussionSessionProvider
+                ? {
+                    requirementSessionId: discussionCLISessionID,
+                    requirementSessionProvider: discussionSessionProvider,
+                  }
+                : {}),
+            };
       return api.createIntake(
         project.id,
         provider === undefined ? input : { ...input, provider },
@@ -177,6 +192,12 @@ export function IntakesView({
         title,
         body,
         messages: messages.map(({ role, content }) => ({ role, content })),
+        ...(discussionCLISessionID && discussionSessionProvider
+          ? {
+              sessionId: discussionCLISessionID,
+              sessionProvider: discussionSessionProvider,
+            }
+          : {}),
       };
       return api.discussRequirement(
         project.id,
@@ -190,6 +211,8 @@ export function IntakesView({
         { role: "assistant", content: result.reply, provider: result.provider },
       ]);
       setDiscussionReady(result.ready);
+      setDiscussionCLISessionID(result.sessionId);
+      setDiscussionSessionProvider(result.provider);
       if (result.title) setTitle(result.title);
       if (result.body) setBody(result.body);
     },

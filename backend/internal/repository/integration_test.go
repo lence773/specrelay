@@ -1802,3 +1802,75 @@ func TestEventQueriesFilterAgentOutputAndPageWithoutGaps(t *testing.T) {
 		}
 	}
 }
+
+func TestAgentSessionsPersistRequirementAndPlanExecutionChains(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	project, err := store.CreateProject(ctx, CreateProjectParams{Name: "Session chain", WorkspacePath: "/tmp/session-chain", NormalizedWorkspace: "/tmp/session-chain"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	intake, generationJob, err := store.CreateIntake(ctx, CreateIntakeParams{
+		ProjectID:                  project.ID,
+		Kind:                       "requirement",
+		Title:                      "复用讨论会话",
+		Body:                       "计划和任务要续接同一个 CLI 会话。",
+		ConfigSnapshot:             json.RawMessage(`{}`),
+		QueuePlan:                  true,
+		RequirementSessionID:       "discussion-session-001",
+		RequirementSessionProvider: "codex",
+	})
+	if err != nil || generationJob == nil {
+		t.Fatalf("create intake: job=%+v err=%v", generationJob, err)
+	}
+	requirement, err := store.GetRequirementSession(ctx, intake.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if requirement.Provider != "codex" || requirement.CLISessionID != "discussion-session-001" || requirement.Purpose != "requirement" {
+		t.Fatalf("requirement session=%+v", requirement)
+	}
+	if _, err = store.UpsertRequirementSession(ctx, project.ID, intake.ID, "codex", "planning-session-002", "planning snapshot"); err != nil {
+		t.Fatal(err)
+	}
+	requirement, err = store.GetRequirementSession(ctx, intake.ID)
+	if err != nil || requirement.CLISessionID != "planning-session-002" || requirement.ContextSummary != "planning snapshot" {
+		t.Fatalf("upserted requirement session=%+v err=%v", requirement, err)
+	}
+
+	if _, err = store.Pool.Exec(ctx, `UPDATE jobs SET status='cancelled' WHERE id=$1`, generationJob.ID); err != nil {
+		t.Fatal(err)
+	}
+	spec := planspec.Spec{Title: "会话计划", Summary: "续接计划上下文", Tasks: []planspec.Task{{Title: "实现会话复用", Scope: []string{"backend"}, Acceptance: []string{"会话持续"}}}, FinalValidation: []string{"tests pass"}}
+	plan, tasks, err := store.SaveGeneratedPlan(ctx, intake, spec, planspec.Render(spec))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(tasks) == 0 {
+		t.Fatal("generated plan has no implementation task")
+	}
+	if _, err = store.UpsertExecutionSession(ctx, project.ID, plan.ID, "codex", "execution-session-003", "execution snapshot", &tasks[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	execution, err := store.GetExecutionSession(ctx, plan.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if execution.Provider != "codex" || execution.CLISessionID != "execution-session-003" || execution.LastTaskID == nil || *execution.LastTaskID != tasks[0].ID {
+		t.Fatalf("execution session=%+v", execution)
+	}
+	if err = store.MarkAgentSessionStale(ctx, execution.ID); err != nil {
+		t.Fatal(err)
+	}
+	stale, err := store.GetExecutionSession(ctx, plan.ID)
+	if err != nil || stale.Status != "stale" {
+		t.Fatalf("stale session=%+v err=%v", stale, err)
+	}
+	if _, err = store.UpsertExecutionSession(ctx, project.ID, plan.ID, "claude", "execution-session-004", "recovered snapshot", &tasks[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := store.GetExecutionSession(ctx, plan.ID)
+	if err != nil || recovered.Status != "active" || recovered.Provider != "claude" || recovered.CLISessionID != "execution-session-004" {
+		t.Fatalf("recovered session=%+v err=%v", recovered, err)
+	}
+}

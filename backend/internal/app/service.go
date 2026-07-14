@@ -85,6 +85,14 @@ func (s *Service) CreateIntakeWithProvider(ctx context.Context, p repository.Cre
 	if _, _, _, err = adapterFor(requestedProvider, settings); err != nil {
 		return domain.Intake{}, nil, err
 	}
+	if strings.TrimSpace(p.RequirementSessionID) != "" {
+		if p.Kind != "requirement" {
+			return domain.Intake{}, nil, errors.New("requirement session can only be attached to a requirement")
+		}
+		if err = requireSessionProvider(p.RequirementSessionProvider); err != nil {
+			return domain.Intake{}, nil, err
+		}
+	}
 	snapshot, _ := json.Marshal(settings)
 	p.ConfigSnapshot = snapshot
 	p.QueuePlan = project.AutomationEnabled
@@ -339,13 +347,46 @@ Project: %s
 Description: %s
 
 %s`, project.Name, project.Description, intakeContext)
+
+	// A requirement discussion is the preferred parent context for plan
+	// generation. Never resume across providers: their session identifiers and
+	// cached context are provider-specific.
+	var requirementSession domain.AgentSession
+	priorSessionID := ""
+	if session, sessionErr := s.Store.GetRequirementSession(ctx, intake.ID); sessionErr == nil {
+		requirementSession = session
+		if session.Status == "active" && session.Provider == adapter.Name() && strings.TrimSpace(session.CLISessionID) != "" {
+			priorSessionID = session.CLISessionID
+		} else if strings.TrimSpace(session.ContextSummary) != "" {
+			prompt = withSessionSnapshot(prompt, session.ContextSummary)
+		}
+	} else if !errors.Is(sessionErr, domain.ErrNotFound) {
+		return sessionErr
+	}
+
 	logPath := filepath.Join(s.DataDir, "logs", job.ID.String()+".log")
 	inv := adapter.GeneratePlan(command, args, project.WorkspacePath, prompt, 0, logPath)
+	if priorSessionID != "" {
+		inv = adapter.ResumePlan(command, args, project.WorkspacePath, prompt, priorSessionID, 0, logPath)
+	}
 	inv.Env = allowedEnv(settings.AllowedEnv)
 	runID := uuid.New()
 	_ = s.Store.StartAgentRun(ctx, repository.AgentRunStart{ID: runID, ProjectID: project.ID, JobID: &job.ID, Provider: adapter.Name(), CommandSummary: command, LogPath: logPath, OwnerInstanceID: s.InstanceID})
 	s.instrumentInvocation(&inv, runID)
 	result, runErr := s.Runner.Run(ctx, project.ID.String()+":"+job.ID.String(), inv)
+	if priorSessionID != "" && isSessionUnavailable(result, runErr) {
+		// Session files may disappear after a CLI upgrade or local cleanup. Keep
+		// planning available by starting a durable replacement from the persisted
+		// requirement snapshot rather than failing the whole intake.
+		_ = s.Store.MarkAgentSessionStale(ctx, requirementSession.ID)
+		prompt = withSessionSnapshot(prompt, requirementSession.ContextSummary)
+		inv = adapter.GeneratePlan(command, args, project.WorkspacePath, prompt, 0, logPath)
+		inv.Env = allowedEnv(settings.AllowedEnv)
+		s.instrumentInvocation(&inv, runID)
+		result, runErr = s.Runner.Run(ctx, project.ID.String()+":"+job.ID.String(), inv)
+		priorSessionID = ""
+	}
+	result.SessionID = effectiveSessionID(result, priorSessionID)
 	finishRun(s.Store, runID, result, runErr)
 	if runErr != nil {
 		return classifyRunError(result, runErr)
@@ -361,6 +402,19 @@ Description: %s
 	plan, _, err := s.Store.SaveGeneratedPlan(ctx, intake, spec, planspec.Render(spec))
 	if err != nil {
 		return err
+	}
+
+	// The plan-generation thread becomes the initial execution thread. Task
+	// execution can continue the inspected architecture and approved plan
+	// without re-sending the entire project context on every task.
+	if result.SessionID != "" {
+		summary := planSessionSummary(intake, plan)
+		if _, err = s.Store.UpsertRequirementSession(ctx, project.ID, intake.ID, adapter.Name(), result.SessionID, summary); err != nil {
+			return err
+		}
+		if _, err = s.Store.UpsertExecutionSession(ctx, project.ID, plan.ID, adapter.Name(), result.SessionID, summary, nil); err != nil {
+			return err
+		}
 	}
 	_, _, err = s.Store.QueuePlanAutomatically(ctx, plan.ID)
 	return err
@@ -503,16 +557,47 @@ func (s *Service) executeTask(ctx context.Context, job domain.Job, project domai
 		return s.Store.FinishTask(ctx, task, "", true, "No validation command configured")
 	}
 
+	var plan domain.Plan
+	var tasks []domain.PlanTask
+	var executionSession domain.AgentSession
+	executionSessionID := ""
+	if !isValidation {
+		plan, err = s.Store.GetPlan(ctx, task.PlanID)
+		if err != nil {
+			return err
+		}
+		tasks, err = s.Store.ListTasks(ctx, task.PlanID)
+		if err != nil {
+			return err
+		}
+		if session, sessionErr := s.Store.GetExecutionSession(ctx, task.PlanID); sessionErr == nil {
+			executionSession = session
+			if session.Status == "active" && session.Provider == requestedProvider && strings.TrimSpace(session.CLISessionID) != "" {
+				executionSessionID = session.CLISessionID
+			}
+		} else if !errors.Is(sessionErr, domain.ErrNotFound) {
+			return sessionErr
+		}
+	}
+
 	logPath := filepath.Join(s.DataDir, "logs", job.ID.String()+".log")
 	prompt := ""
+	fallbackSummary := ""
 	if !isValidation {
 		scope := []string{}
 		acceptance := []string{}
 		_ = json.Unmarshal(task.Scope, &scope)
 		_ = json.Unmarshal(task.Acceptance, &acceptance)
 		prompt = fmt.Sprintf("Implement exactly one SpecRelay task in the current workspace. Do not modify unrelated files.\nTask %s: %s\nScope:\n- %s\nAcceptance:\n- %s\nRun focused tests when useful, then summarize the changes.", task.TaskKey, task.Title, strings.Join(scope, "\n- "), strings.Join(acceptance, "\n- "))
+		fallbackSummary = executionSession.ContextSummary
+		if strings.TrimSpace(fallbackSummary) == "" {
+			fallbackSummary = executionSessionSummary(plan, tasks, task, "", "")
+		}
+		if executionSessionID == "" {
+			prompt = withSessionSnapshot(prompt, fallbackSummary)
+		}
 	}
-	inv, provider, commandSummary, err := taskInvocation(settings, requestedProvider, isValidation, project.WorkspacePath, prompt, task.ID.String(), task.SessionID, logPath)
+	inv, provider, commandSummary, err := taskInvocation(settings, requestedProvider, isValidation, project.WorkspacePath, prompt, task.ID.String(), executionSessionID, logPath)
 	if err != nil {
 		return err
 	}
@@ -524,7 +609,31 @@ func (s *Service) executeTask(ctx context.Context, job domain.Job, project domai
 	_ = s.Store.StartAgentRun(ctx, repository.AgentRunStart{ID: runID, ProjectID: project.ID, JobID: &job.ID, TaskID: &task.ID, Provider: provider, CommandSummary: commandSummary, LogPath: logPath, OwnerInstanceID: s.InstanceID})
 	s.instrumentInvocation(&inv, runID)
 	result, runErr := s.Runner.Run(ctx, project.ID.String()+":"+job.ID.String(), inv)
+	if !isValidation && executionSessionID != "" && isSessionUnavailable(result, runErr) {
+		// Do not retry a missing session forever. Persist a stale marker and
+		// create a fresh durable execution thread with a bounded hand-off
+		// snapshot of the approved plan and completed work.
+		_ = s.Store.MarkAgentSessionStale(ctx, executionSession.ID)
+		prompt = withSessionSnapshot(prompt, fallbackSummary)
+		inv, provider, commandSummary, err = taskInvocation(settings, requestedProvider, false, project.WorkspacePath, prompt, task.ID.String(), "", logPath)
+		if err != nil {
+			return err
+		}
+		inv.Env = allowedEnv(settings.AllowedEnv)
+		s.instrumentInvocation(&inv, runID)
+		result, runErr = s.Runner.Run(ctx, project.ID.String()+":"+job.ID.String(), inv)
+		executionSessionID = ""
+	}
+	result.SessionID = effectiveSessionID(result, executionSessionID)
 	finishRun(s.Store, runID, result, runErr)
+
+	if !isValidation && !result.Cancelled && result.SessionID != "" {
+		summary := executionSessionSummary(plan, tasks, task, fallbackSummary, string(result.Output))
+		if _, err = s.Store.UpsertExecutionSession(ctx, project.ID, plan.ID, requestedProvider, result.SessionID, summary, &task.ID); err != nil {
+			return err
+		}
+	}
+
 	message := "completed"
 	if runErr != nil {
 		message = runErr.Error()
@@ -553,7 +662,6 @@ func (s *Service) executeTask(ctx context.Context, job domain.Job, project domai
 	}
 	return s.Store.FinishTask(ctx, task, result.SessionID, true, message)
 }
-
 func taskInvocation(settings domain.ProjectSettings, requestedProvider string, isValidation bool, workspace, prompt, taskID, sessionID, logPath string) (agent.Invocation, string, string, error) {
 	if isValidation {
 		return agent.Invocation{

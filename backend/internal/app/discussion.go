@@ -19,18 +19,21 @@ type RequirementDiscussionMessage struct {
 }
 
 type RequirementDiscussionRequest struct {
-	Title    string                         `json:"title"`
-	Body     string                         `json:"body"`
-	Provider string                         `json:"provider,omitempty"`
-	Messages []RequirementDiscussionMessage `json:"messages"`
+	Title           string                         `json:"title"`
+	Body            string                         `json:"body"`
+	Provider        string                         `json:"provider,omitempty"`
+	SessionID       string                         `json:"sessionId,omitempty"`
+	SessionProvider string                         `json:"sessionProvider,omitempty"`
+	Messages        []RequirementDiscussionMessage `json:"messages"`
 }
 
 type RequirementDiscussionResult struct {
-	Provider string `json:"provider"`
-	Reply    string `json:"reply"`
-	Title    string `json:"title"`
-	Body     string `json:"body"`
-	Ready    bool   `json:"ready"`
+	Provider  string `json:"provider"`
+	Reply     string `json:"reply"`
+	Title     string `json:"title"`
+	Body      string `json:"body"`
+	Ready     bool   `json:"ready"`
+	SessionID string `json:"sessionId,omitempty"`
 }
 
 type discussionAgentOutput struct {
@@ -84,11 +87,32 @@ func (s *Service) DiscussRequirement(ctx context.Context, projectID uuid.UUID, i
 
 	runID := uuid.New()
 	logPath := filepath.Join(s.DataDir, "logs", "discussion-"+runID.String()+".log")
+	priorSessionID := strings.TrimSpace(input.SessionID)
+	if priorSessionID != "" && input.SessionProvider != adapter.Name() {
+		// CLI session IDs are provider-specific. A provider switch—or a legacy
+		// client that did not identify the creating provider—starts a new
+		// durable conversation from the full client-side transcript.
+		priorSessionID = ""
+	}
 	inv := adapter.Discuss(command, args, project.WorkspacePath, prompt, 0, logPath)
+	if priorSessionID != "" {
+		inv = adapter.ResumeDiscussion(command, args, project.WorkspacePath, prompt, priorSessionID, 0, logPath)
+	}
 	inv.Env = allowedEnv(settings.AllowedEnv)
 	_ = s.Store.StartAgentRun(ctx, repository.AgentRunStart{ID: runID, ProjectID: project.ID, Provider: adapter.Name(), CommandSummary: command + "（需求讨论）", LogPath: logPath, OwnerInstanceID: s.InstanceID})
 	s.instrumentInvocation(&inv, runID)
 	result, runErr := s.Runner.Run(ctx, project.ID.String()+":discussion:"+runID.String(), inv)
+	if priorSessionID != "" && isSessionUnavailable(result, runErr) {
+		// A local CLI upgrade or expired provider thread must not make the
+		// requirement draft unusable. Start a new durable thread from the full
+		// client-side discussion transcript instead.
+		inv = adapter.Discuss(command, args, project.WorkspacePath, prompt, 0, logPath)
+		inv.Env = allowedEnv(settings.AllowedEnv)
+		s.instrumentInvocation(&inv, runID)
+		result, runErr = s.Runner.Run(ctx, project.ID.String()+":discussion:"+runID.String(), inv)
+		priorSessionID = ""
+	}
+	result.SessionID = effectiveSessionID(result, priorSessionID)
 	finishRun(s.Store, runID, result, runErr)
 	if runErr != nil {
 		return RequirementDiscussionResult{}, classifyRunError(result, runErr)
@@ -102,6 +126,7 @@ func (s *Service) DiscussRequirement(ctx context.Context, projectID uuid.UUID, i
 		return RequirementDiscussionResult{}, err
 	}
 	parsed.Provider = adapter.Name()
+	parsed.SessionID = result.SessionID
 	return parsed, nil
 }
 

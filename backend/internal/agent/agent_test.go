@@ -154,13 +154,13 @@ func TestPlanGenerationUsesReadOnlyCLIMode(t *testing.T) {
 				t.Fatalf("unsafe plan generation arguments: %v", inv.Args)
 			}
 			if name == "codex" {
-				for _, required := range []string{" exec ", " --sandbox read-only ", " --skip-git-repo-check ", " --ephemeral ", " --json "} {
+				for _, required := range []string{" exec ", " --sandbox read-only ", " --skip-git-repo-check ", " --json "} {
 					if !strings.Contains(joined, required) {
 						t.Fatalf("missing %q in Codex plan arguments: %v", required, inv.Args)
 					}
 				}
 			} else {
-				for _, required := range []string{" --permission-mode plan ", " --allowedTools Read,Grep,Glob ", " --no-session-persistence "} {
+				for _, required := range []string{" --permission-mode plan ", " --allowedTools Read,Grep,Glob "} {
 					if !strings.Contains(joined, required) {
 						t.Fatalf("missing %q in Claude plan arguments: %v", required, inv.Args)
 					}
@@ -174,9 +174,32 @@ func TestCodexTaskInvocationsAllowNonGitWorkspace(t *testing.T) {
 	execute := Codex().ExecuteTask("codex", nil, "/workspace", "prompt", "task", time.Minute, "/tmp/task.log")
 	resume := Codex().ResumeTask("codex", nil, "/workspace", "prompt", "session", time.Minute, "/tmp/task.log")
 	for label, inv := range map[string]Invocation{"execute": execute, "resume": resume} {
-		if !strings.Contains(" "+strings.Join(inv.Args, " ")+" ", " --skip-git-repo-check ") {
-			t.Fatalf("%s invocation does not allow a non-Git workspace: %v", label, inv.Args)
+		joined := " " + strings.Join(inv.Args, " ") + " "
+		if !strings.Contains(joined, " --skip-git-repo-check ") || !strings.Contains(joined, " --json ") {
+			t.Fatalf("%s invocation does not allow a non-Git workspace with JSON output: %v", label, inv.Args)
 		}
+	}
+}
+
+func TestResumePlanAndDiscussionUsePersistentSessions(t *testing.T) {
+	for name, adapter := range map[string]Adapter{"codex": Codex(), "claude": Claude()} {
+		t.Run(name, func(t *testing.T) {
+			for label, inv := range map[string]Invocation{
+				"plan":       adapter.ResumePlan(name, nil, "/workspace", "prompt", "session-id", time.Minute, "/tmp/plan.log"),
+				"discussion": adapter.ResumeDiscussion(name, nil, "/workspace", "prompt", "session-id", time.Minute, "/tmp/discussion.log"),
+			} {
+				joined := " " + strings.Join(inv.Args, " ") + " "
+				if strings.Contains(joined, " --ephemeral ") || strings.Contains(joined, " --no-session-persistence ") {
+					t.Fatalf("%s unexpectedly disables persistence: %v", label, inv.Args)
+				}
+				if name == "codex" && (!strings.Contains(joined, " exec resume ") || !strings.Contains(joined, " session-id ") || !strings.Contains(joined, " --json ") || !strings.Contains(joined, ` sandbox_mode="read-only" `)) {
+					t.Fatalf("invalid or unsafe Codex %s resume arguments: %v", label, inv.Args)
+				}
+				if name == "claude" && (!strings.Contains(joined, " --resume session-id ") || !strings.Contains(joined, " -p prompt ")) {
+					t.Fatalf("invalid Claude %s resume arguments: %v", label, inv.Args)
+				}
+			}
+		})
 	}
 }
 
@@ -195,7 +218,7 @@ func TestDiscussionInvocationUsesReadOnlyCodexSandbox(t *testing.T) {
 			t.Fatalf("unsafe Codex discussion arguments: %v", inv.Args)
 		}
 	}
-	for _, required := range []string{" exec ", " --sandbox read-only ", " --skip-git-repo-check ", " --ephemeral ", " --json ", " prompt "} {
+	for _, required := range []string{" exec ", " --sandbox read-only ", " --skip-git-repo-check ", " --json ", " prompt "} {
 		if !strings.Contains(joined, required) {
 			t.Fatalf("missing %q in Codex discussion arguments: %v", required, inv.Args)
 		}
@@ -217,7 +240,7 @@ func TestDiscussionInvocationRestrictsClaudeTools(t *testing.T) {
 			t.Fatalf("unsafe Claude discussion arguments: %v", inv.Args)
 		}
 	}
-	for _, required := range []string{" -p prompt ", " --output-format json ", " --permission-mode plan ", " --allowedTools Read,Grep,Glob ", " --no-session-persistence "} {
+	for _, required := range []string{" -p prompt ", " --output-format json ", " --permission-mode plan ", " --allowedTools Read,Grep,Glob "} {
 		if !strings.Contains(joined, required) {
 			t.Fatalf("missing %q in Claude discussion arguments: %v", required, inv.Args)
 		}

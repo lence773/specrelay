@@ -347,17 +347,19 @@ func (s *Server) intakes(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var in struct {
-		Kind           string     `json:"kind"`
-		ParentIntakeID *uuid.UUID `json:"parentIntakeId"`
-		Title          string     `json:"title"`
-		Body           string     `json:"body"`
-		Provider       string     `json:"provider,omitempty"`
+		Kind                       string     `json:"kind"`
+		ParentIntakeID             *uuid.UUID `json:"parentIntakeId"`
+		Title                      string     `json:"title"`
+		Body                       string     `json:"body"`
+		Provider                   string     `json:"provider,omitempty"`
+		RequirementSessionID       string     `json:"requirementSessionId,omitempty"`
+		RequirementSessionProvider string     `json:"requirementSessionProvider,omitempty"`
 	}
 	if err := decodeJSON(r, &in); err != nil {
 		badJSON(w, r, err)
 		return
 	}
-	item, job, err := s.App.CreateIntakeWithProvider(repository.WithExecutionProvider(r.Context(), in.Provider), repository.CreateIntakeParams{ProjectID: projectID, Kind: in.Kind, ParentIntakeID: in.ParentIntakeID, Title: in.Title, Body: in.Body}, in.Provider)
+	item, job, err := s.App.CreateIntakeWithProvider(repository.WithExecutionProvider(r.Context(), in.Provider), repository.CreateIntakeParams{ProjectID: projectID, Kind: in.Kind, ParentIntakeID: in.ParentIntakeID, Title: in.Title, Body: in.Body, RequirementSessionID: in.RequirementSessionID, RequirementSessionProvider: in.RequirementSessionProvider}, in.Provider)
 	if err != nil {
 		respond(w, r, nil, err)
 		return

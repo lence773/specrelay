@@ -98,6 +98,14 @@ export type RequirementDiscussionRequest = {
      * Optional provider override for this discussion round only. Every later round resolves its own request independently; omission uses the project's current ProjectSettings.agentProvider and does not lock the provider returned by an earlier round.
      */
     provider?: CliProvider;
+    /**
+     * CLI session ID returned by the previous discussion round. It is used to continue the same provider conversation when available.
+     */
+    sessionId?: string;
+    /**
+     * Provider that created sessionId. A changed provider starts a new discussion session instead of attempting cross-provider resume.
+     */
+    sessionProvider?: CliProvider;
     messages: Array<RequirementDiscussionMessage>;
 };
 
@@ -107,6 +115,7 @@ export type RequirementDiscussionResult = {
     title: string;
     body: string;
     ready: boolean;
+    sessionId?: string;
 };
 
 export type IntakeStatus = 'open' | 'planning' | 'planned' | 'closed' | 'plan_failed';
@@ -123,6 +132,14 @@ export type IntakeInput = {
      * Optional provider override only for plan generation automatically queued when this request creates a requirement or feedback with project automation enabled. When omitted, the queued job carries no override and uses ProjectSettings.agentProvider on the server. It does not change the project default.
      */
     provider?: CliProvider;
+    /**
+     * Durable CLI session from the requirement discussion. Only valid when kind is requirement.
+     */
+    requirementSessionId?: string;
+    /**
+     * Provider that created requirementSessionId. Only valid when kind is requirement.
+     */
+    requirementSessionProvider?: CliProvider;
 };
 
 export type Intake = ResourceBase & {

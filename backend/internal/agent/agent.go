@@ -38,7 +38,9 @@ type Adapter interface {
 	Name() string
 	Probe(context.Context, string, []string, string) (Result, error)
 	GeneratePlan(string, []string, string, string, time.Duration, string) Invocation
+	ResumePlan(string, []string, string, string, string, time.Duration, string) Invocation
 	Discuss(string, []string, string, string, time.Duration, string) Invocation
+	ResumeDiscussion(string, []string, string, string, string, time.Duration, string) Invocation
 	ExecuteTask(string, []string, string, string, string, time.Duration, string) Invocation
 	ResumeTask(string, []string, string, string, string, time.Duration, string) Invocation
 }
@@ -318,20 +320,34 @@ func (a CLIAdapter) Probe(ctx context.Context, command string, args []string, di
 func (a CLIAdapter) GeneratePlan(command string, args []string, workspace, prompt string, timeout time.Duration, logPath string) Invocation {
 	args = safeReadOnlyArgs(a.provider, args)
 	if a.provider == "codex" {
-		args = append(args, "exec", "--sandbox", "read-only", "--skip-git-repo-check", "--ephemeral", "--json", prompt)
+		// Planning must persist its CLI thread so the approved plan and every
+		// later task can continue from the same inspected workspace context.
+		args = append(args, "exec", "--sandbox", "read-only", "--skip-git-repo-check", "--json", prompt)
 	} else {
-		args = append(args, "-p", prompt, "--output-format", "json", "--permission-mode", "plan", "--allowedTools", "Read,Grep,Glob", "--no-session-persistence")
+		args = append(args, "-p", prompt, "--output-format", "json", "--permission-mode", "plan", "--allowedTools", "Read,Grep,Glob")
+	}
+	return Invocation{Provider: a.provider, Command: command, Args: args, Dir: workspace, Timeout: timeout, LogPath: logPath}
+}
+func (a CLIAdapter) ResumePlan(command string, args []string, workspace, prompt, sessionID string, timeout time.Duration, logPath string) Invocation {
+	args = safeReadOnlyArgs(a.provider, args)
+	if a.provider == "codex" {
+		args = append(args, "exec", "resume", "-c", `sandbox_mode="read-only"`, "--skip-git-repo-check", "--json", sessionID, prompt)
+	} else {
+		args = append(args, "--resume", sessionID, "-p", prompt, "--output-format", "json", "--permission-mode", "plan", "--allowedTools", "Read,Grep,Glob")
 	}
 	return Invocation{Provider: a.provider, Command: command, Args: args, Dir: workspace, Timeout: timeout, LogPath: logPath}
 }
 func (a CLIAdapter) Discuss(command string, args []string, workspace, prompt string, timeout time.Duration, logPath string) Invocation {
 	args = safeReadOnlyArgs(a.provider, args)
 	if a.provider == "codex" {
-		args = append(args, "exec", "--sandbox", "read-only", "--skip-git-repo-check", "--ephemeral", "--json", prompt)
+		args = append(args, "exec", "--sandbox", "read-only", "--skip-git-repo-check", "--json", prompt)
 	} else {
-		args = append(args, "-p", prompt, "--output-format", "json", "--permission-mode", "plan", "--allowedTools", "Read,Grep,Glob", "--no-session-persistence")
+		args = append(args, "-p", prompt, "--output-format", "json", "--permission-mode", "plan", "--allowedTools", "Read,Grep,Glob")
 	}
 	return Invocation{Provider: a.provider, Command: command, Args: args, Dir: workspace, Timeout: timeout, LogPath: logPath}
+}
+func (a CLIAdapter) ResumeDiscussion(command string, args []string, workspace, prompt, sessionID string, timeout time.Duration, logPath string) Invocation {
+	return a.ResumePlan(command, args, workspace, prompt, sessionID, timeout, logPath)
 }
 
 func safeReadOnlyArgs(provider string, args []string) []string {
@@ -377,7 +393,7 @@ func (a CLIAdapter) ExecuteTask(command string, args []string, workspace, prompt
 }
 func (a CLIAdapter) ResumeTask(command string, args []string, workspace, prompt, sessionID string, timeout time.Duration, logPath string) Invocation {
 	if a.provider == "codex" {
-		args = append(args, "exec", "resume", "--skip-git-repo-check", sessionID, prompt)
+		args = append(args, "exec", "resume", "--skip-git-repo-check", "--json", sessionID, prompt)
 	} else {
 		args = append(args, "--resume", sessionID, "-p", prompt, "--output-format", "json")
 	}

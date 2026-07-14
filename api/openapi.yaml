@@ -289,6 +289,12 @@ components:
         provider:
           $ref: '#/components/schemas/CLIProvider'
           description: Optional provider override for this discussion round only. Every later round resolves its own request independently; omission uses the project's current ProjectSettings.agentProvider and does not lock the provider returned by an earlier round.
+        sessionId:
+          type: string
+          description: CLI session ID returned by the previous discussion round. It is used to continue the same provider conversation when available.
+        sessionProvider:
+          $ref: '#/components/schemas/CLIProvider'
+          description: Provider that created sessionId. A changed provider starts a new discussion session instead of attempting cross-provider resume.
         messages:
           type: array
           minItems: 1
@@ -304,6 +310,7 @@ components:
         title: {type: string}
         body: {type: string}
         ready: {type: boolean}
+        sessionId: {type: string}
     IntakeStatus: {type: string, enum: [open, planning, planned, closed, plan_failed]}
     IntakeInput:
       type: object
@@ -320,6 +327,12 @@ components:
         provider:
           $ref: '#/components/schemas/CLIProvider'
           description: Optional provider override only for plan generation automatically queued when this request creates a requirement or feedback with project automation enabled. When omitted, the queued job carries no override and uses ProjectSettings.agentProvider on the server. It does not change the project default.
+        requirementSessionId:
+          type: string
+          description: Durable CLI session from the requirement discussion. Only valid when kind is requirement.
+        requirementSessionProvider:
+          $ref: '#/components/schemas/CLIProvider'
+          description: Provider that created requirementSessionId. Only valid when kind is requirement.
 
     Intake: {allOf: [{$ref: '#/components/schemas/ResourceBase'}, {type: object, required: [projectId, kind, title, body, status, configSnapshot], properties: {projectId: {type: string, format: uuid}, kind: {type: string, enum: [requirement, feedback]}, parentIntakeId: {type: [string, 'null'], format: uuid}, title: {type: string}, body: {type: string}, status: {$ref: '#/components/schemas/IntakeStatus'}, configSnapshot: {type: object}}}]}
     PlanSpec: {type: object, required: [title, summary, tasks, finalValidation], additionalProperties: false, properties: {title: {type: string}, summary: {type: string}, tasks: {type: array, items: {type: object, required: [title, scope, acceptance], properties: {title: {type: string}, scope: {type: array, items: {type: string}}, acceptance: {type: array, items: {type: string}}}}}, finalValidation: {type: array, items: {type: string}}}}

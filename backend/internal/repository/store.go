@@ -101,12 +101,14 @@ type UpdateProjectParams struct {
 	Version                                               int64
 }
 type CreateIntakeParams struct {
-	ProjectID      uuid.UUID
-	Kind           string
-	ParentIntakeID *uuid.UUID
-	Title, Body    string
-	ConfigSnapshot json.RawMessage
-	QueuePlan      bool
+	ProjectID                  uuid.UUID
+	Kind                       string
+	ParentIntakeID             *uuid.UUID
+	Title, Body                string
+	ConfigSnapshot             json.RawMessage
+	QueuePlan                  bool
+	RequirementSessionID       string
+	RequirementSessionProvider string
 }
 type UpdateIntakeParams struct {
 	Title, Body, Status string
@@ -488,6 +490,13 @@ func (s *Store) CreateIntake(ctx context.Context, p CreateIntakeParams) (domain.
 	if err != nil {
 		return domain.Intake{}, nil, err
 	}
+	if p.Kind == "requirement" && strings.TrimSpace(p.RequirementSessionID) != "" {
+		_, err = tx.Exec(ctx, `INSERT INTO agent_sessions(id,project_id,intake_id,provider,purpose,cli_session_id,context_summary,status)
+			VALUES($1,$2,$3,$4,'requirement',$5,$6,'active')`, uuid.New(), p.ProjectID, id, p.RequirementSessionProvider, strings.TrimSpace(p.RequirementSessionID), truncateIntakeSessionSummary(out.Title, out.Body))
+		if err != nil {
+			return domain.Intake{}, nil, err
+		}
+	}
 	var job *domain.Job
 	if p.QueuePlan {
 		maxAttempts, err := projectMaxAttempts(ctx, tx, p.ProjectID)
@@ -505,6 +514,21 @@ func (s *Store) CreateIntake(ctx context.Context, p CreateIntakeParams) (domain.
 		return domain.Intake{}, nil, err
 	}
 	return out, job, nil
+}
+
+func truncateIntakeSessionSummary(title, body string) string {
+	summary := strings.TrimSpace("需求标题：" + title + "\n\n已确认需求：\n" + body)
+	const limit = 12000
+	runes := []rune(summary)
+	if len(runes) <= limit {
+		return summary
+	}
+	const note = "\n[上下文快照已截断]"
+	noteRunes := []rune(note)
+	if limit <= len(noteRunes) {
+		return string(runes[:limit])
+	}
+	return string(runes[:limit-len(noteRunes)]) + note
 }
 
 func validateIntakeParent(ctx context.Context, tx pgx.Tx, p CreateIntakeParams) error {
