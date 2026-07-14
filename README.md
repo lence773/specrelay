@@ -23,6 +23,10 @@ This repository includes a native Linux `.deb` packaging flow. On launch, the de
 
 The desktop app does not put a CLI in a container and does not upload project folders. You select existing local folders directly in the UI.
 
+### GitHub Actions build
+
+Push a version tag such as `v1.0.0`, or run the **Desktop package** workflow manually in GitHub Actions, to build a Linux `.deb` on an Ubuntu runner. The workflow uploads the installer as a downloadable build artifact.
+
 ### Build and install
 
 ```bash

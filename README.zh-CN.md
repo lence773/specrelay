@@ -23,6 +23,10 @@ SpecRelay 是一个**本地优先、中文界面**的智能体工作流工具：
 
 桌面应用不会把 CLI 放进容器，也不会上传项目目录。创建项目时可在界面中浏览并选择已有的本地文件夹。
 
+### GitHub Actions 构建
+
+推送如 `v1.0.0` 的版本标签，或在 GitHub Actions 中手动运行 **Desktop package** 工作流，即可在 Ubuntu Runner 中构建 Linux `.deb`，并以可下载的构建产物上传。
+
 ### 构建并安装
 
 ```bash
