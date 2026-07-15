@@ -270,8 +270,8 @@ jobs:
             security set-key-partition-list               -S apple-tool:,apple:,codesign:               -s               -k "$keychain_password"               "$keychain_path"
             existing_keychains=()
             while IFS= read -r existing_keychain; do
-              existing_keychain="${existing_keychain#"}"
-              existing_keychain="${existing_keychain%"}"
+              existing_keychain="${existing_keychain#\"}"
+              existing_keychain="${existing_keychain%\"}"
               [[ -n "$existing_keychain" ]] && existing_keychains+=("$existing_keychain")
             done < <(security list-keychains -d user | sed 's/^[[:space:]]*//')
             security list-keychains -d user -s "$keychain_path" "${existing_keychains[@]}"
@@ -370,8 +370,8 @@ jobs:
             security set-key-partition-list               -S apple-tool:,apple:,codesign:               -s               -k "$keychain_password"               "$keychain_path"
             existing_keychains=()
             while IFS= read -r existing_keychain; do
-              existing_keychain="${existing_keychain#"}"
-              existing_keychain="${existing_keychain%"}"
+              existing_keychain="${existing_keychain#\"}"
+              existing_keychain="${existing_keychain%\"}"
               [[ -n "$existing_keychain" ]] && existing_keychains+=("$existing_keychain")
             done < <(security list-keychains -d user | sed 's/^[[:space:]]*//')
             security list-keychains -d user -s "$keychain_path" "${existing_keychains[@]}"
