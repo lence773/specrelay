@@ -152,7 +152,7 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $hasCertificate = -not [string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_BASE64)
           $hasPassword = -not [string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PASSWORD)
-          if ($env:OFFICIAL_RELEASE -eq 'true' -or $hasCertificate -or $hasPassword) {
+          if ($env:OFFICIAL_RELEASE -eq 'true') {
             if (-not $hasCertificate -or -not $hasPassword) {
               throw 'Official Windows releases require WINDOWS_CERTIFICATE_BASE64 and WINDOWS_CERTIFICATE_PASSWORD.'
             }
@@ -252,7 +252,7 @@ jobs:
           APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
         run: |
           set -euo pipefail
-          if [[ "$OFFICIAL_RELEASE" == 'true' || -n "$APPLE_CERTIFICATE$APPLE_CERTIFICATE_PASSWORD$APPLE_SIGNING_IDENTITY" ]]; then
+          if [[ "$OFFICIAL_RELEASE" == 'true' ]]; then
             for variable in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY; do
               if [[ -z "${!variable:-}" ]]; then
                 echo "Developer ID credential is empty: $variable" >&2
@@ -352,7 +352,7 @@ jobs:
           APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
         run: |
           set -euo pipefail
-          if [[ "$OFFICIAL_RELEASE" == 'true' || -n "$APPLE_CERTIFICATE$APPLE_CERTIFICATE_PASSWORD$APPLE_SIGNING_IDENTITY" ]]; then
+          if [[ "$OFFICIAL_RELEASE" == 'true' ]]; then
             for variable in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY; do
               if [[ -z "${!variable:-}" ]]; then
                 echo "Developer ID credential is empty: $variable" >&2

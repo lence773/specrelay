@@ -118,6 +118,15 @@ printf 'Validated desktop version %s%s (%s build).\n' \
   "$version" "${SPECRELAY_RELEASE_TAG:+ against tag $SPECRELAY_RELEASE_TAG}" \
   "$([[ "$official_release" == true ]] && printf official || printf unofficial)"
 
+# Manual CI builds must not accidentally consume partially configured signing
+# credentials. They are intentionally marked as unsigned/unofficial artifacts;
+# only a version-tagged official release may import credentials and sign bundles.
+if [[ "$official_release" != true ]]; then
+  unset TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD TAURI_UPDATER_PUBLIC_KEY
+  unset WINDOWS_CERTIFICATE_THUMBPRINT WINDOWS_TIMESTAMP_URL
+  unset APPLE_SIGNING_IDENTITY APPLE_ID APPLE_PASSWORD APPLE_TEAM_ID
+fi
+
 go_bin="${GO_BIN:-go}"
 for command in npm cargo rustc "$go_bin"; do
   if ! command -v "$command" >/dev/null 2>&1; then
