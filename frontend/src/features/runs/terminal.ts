@@ -1,4 +1,4 @@
-import type { AgentRun } from '../../api/types'
+import type { AgentRun, ObservabilityAgentRun } from '../../api/types'
 
 export type TerminalLineKind='system'|'command'|'output'|'working'|'success'|'error'|'todo'|'assistant'|'notice'
 
@@ -6,6 +6,72 @@ export interface TerminalLine {
   kind:TerminalLineKind
   text:string
   marker?:string
+}
+
+export interface RunBadge {
+  key:string
+  label:string
+  tone:'new'|'reused'|'restored'|'warning'|'neutral'
+}
+
+export interface UsageTrendCost {
+  currency:string
+  amount:number
+  coverageCount:number
+}
+
+export interface UsageTrendPoint {
+  bucket:string
+  runCount:number
+  tokenCoverageCount:number
+  totalTokens?:number
+  costs:UsageTrendCost[]
+}
+
+const sessionModeText:Record<NonNullable<ObservabilityAgentRun['sessionMode']>,Omit<RunBadge,'key'>>={
+  new:{label:'新会话',tone:'new'},
+  reused:{label:'复用会话',tone:'reused'},
+  snapshot_restored:{label:'快照恢复',tone:'restored'},
+  not_applicable:{label:'无需会话',tone:'neutral'},
+}
+const invalidationText:Record<string,string>={provider_switched:'Provider 已切换',session_not_found:'会话不存在',restore_failed:'快照恢复失败'}
+
+/** Produces explicit, redaction-safe session labels for run list and detail views. */
+export function runSessionBadges(run:Pick<ObservabilityAgentRun,'sessionMode'>&{sessionInvalidationReason?:string}):RunBadge[]{
+  const badges:RunBadge[]=[]
+  if(run.sessionMode){const badge=sessionModeText[run.sessionMode];badges.push({key:`session-${run.sessionMode}`,...badge})}
+  if(run.sessionInvalidationReason){
+    const reason=invalidationText[run.sessionInvalidationReason]??run.sessionInvalidationReason.replaceAll('_',' ')
+    badges.push({key:`invalidation-${run.sessionInvalidationReason}`,label:`会话失效：${reason}`,tone:'warning'})
+  }
+  return badges
+}
+
+/** Groups only reported usage values. Missing token/cost data stays undefined and is never converted to zero. */
+export function buildUsageTrend(runs:ObservabilityAgentRun[]):UsageTrendPoint[]{
+  const buckets=new Map<string,{runCount:number;tokenCoverageCount:number;totalTokens:number;costs:Map<string,{amount:number;coverageCount:number}>}>()
+  for(const run of runs){
+    const bucket=run.startedAt.slice(0,10)
+    const point=buckets.get(bucket)??{runCount:0,tokenCoverageCount:0,totalTokens:0,costs:new Map()}
+    point.runCount++
+    if(run.totalTokens!==undefined){point.tokenCoverageCount++;point.totalTokens+=run.totalTokens}
+    if(run.costAmount!==undefined&&run.costCurrency){
+      const amount=Number(run.costAmount)
+      if(Number.isFinite(amount)){
+        const current=point.costs.get(run.costCurrency)??{amount:0,coverageCount:0}
+        current.amount+=amount;current.coverageCount++
+        point.costs.set(run.costCurrency,current)
+      }
+    }
+    buckets.set(bucket,point)
+  }
+  return [...buckets.entries()].sort(([a],[b])=>a.localeCompare(b)).map(([bucket,point])=>({
+    bucket,
+    runCount:point.runCount,
+    tokenCoverageCount:point.tokenCoverageCount,
+    ...(point.tokenCoverageCount?{totalTokens:point.totalTokens}:{}),
+    costs:[...point.costs.entries()].sort(([a],[b])=>a.localeCompare(b)).map(([currency,cost])=>({currency,...cost})),
+  }))
 }
 
 type JSONRecord=Record<string,unknown>

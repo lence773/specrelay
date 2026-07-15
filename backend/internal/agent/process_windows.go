@@ -3,9 +3,12 @@
 package agent
 
 import (
+	"errors"
 	"fmt"
 	"os/exec"
 	"syscall"
+
+	"golang.org/x/sys/windows"
 )
 
 // Windows does not support Unix process groups. taskkill /T terminates the
@@ -38,4 +41,37 @@ func terminateProcessTree(cmd *exec.Cmd, force bool) error {
 		CreationFlags: createNoWindow,
 	}
 	return taskkill.Run()
+}
+
+// InspectProcess queries Windows without signalling or opening the process for
+// mutation. The creation-time token distinguishes the original CLI from a
+// later process that happens to reuse the same PID.
+func InspectProcess(pid int) (ProcessEvidence, error) {
+	if pid <= 0 {
+		return ProcessEvidence{}, nil
+	}
+	handle, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
+	if err != nil {
+		if errors.Is(err, windows.ERROR_INVALID_PARAMETER) {
+			return ProcessEvidence{Running: false}, nil
+		}
+		if errors.Is(err, windows.ERROR_ACCESS_DENIED) {
+			return ProcessEvidence{Running: true}, nil
+		}
+		return ProcessEvidence{}, err
+	}
+	defer windows.CloseHandle(handle)
+	var exitCode uint32
+	if err = windows.GetExitCodeProcess(handle, &exitCode); err != nil {
+		return ProcessEvidence{}, err
+	}
+	const stillActive = 259
+	if exitCode != stillActive {
+		return ProcessEvidence{Running: false}, nil
+	}
+	var created, exited, kernel, user windows.Filetime
+	if err = windows.GetProcessTimes(handle, &created, &exited, &kernel, &user); err != nil {
+		return ProcessEvidence{Running: true}, nil
+	}
+	return ProcessEvidence{Running: true, Identity: fmt.Sprintf("windows-created:%d", created.Nanoseconds())}, nil
 }

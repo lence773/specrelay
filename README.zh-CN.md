@@ -33,7 +33,47 @@ SpecRelay 是一个**本地优先、中文界面**的智能体工作流工具：
 | macOS Intel | macOS Intel | `.dmg` |
 | macOS Apple Silicon | macOS Apple Silicon | `.dmg` |
 
-此工作流不会对安装包进行代码签名。正式公开分发前，应配置 Apple 与 Windows 的签名 / 公证凭据；否则 macOS Gatekeeper 或 Windows SmartScreen 可能要求用户额外确认。
+### 发布签名、公证与可追溯信息
+
+标签构建属于**正式发布**，采用失败即停止（fail-closed）策略：
+
+- Windows NSIS 与 MSI 安装包使用从 `WINDOWS_CERTIFICATE_BASE64` 临时导入的受信任证书完成 Authenticode 签名和 SHA-256 时间戳，并通过 `Get-AuthenticodeSignature` 检查。证书/密码缺失、证书过期或状态不是 `Valid` 时立即停止发布。
+- macOS `.app` 与最终 `.dmg` 使用 Developer ID Application 身份签名，提交 Apple 公证并装订票据；上传前必须通过 `codesign`、`spctl` 和 `xcrun stapler validate`。Apple 凭据缺失或任一校验失败时立即停止发布。
+- 所有可自动更新的载荷都使用独立的 Tauri 更新私钥 `TAURI_SIGNING_PRIVATE_KEY` 生成脱离签名，并在发布前使用配对公钥验证。桌面安装包只注入 `TAURI_UPDATER_PUBLIC_KEY`；更新私钥及其密码、PFX/P12 内容、证书密码、Apple ID 专用密码和公证凭据只保存在 GitHub Actions Secrets 中，不会写入仓库、Release 文件或安装包。
+
+需要配置 GitHub Actions **Secrets**：`TAURI_SIGNING_PRIVATE_KEY`、`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`、`WINDOWS_CERTIFICATE_BASE64`、`WINDOWS_CERTIFICATE_PASSWORD`、`APPLE_CERTIFICATE`、`APPLE_CERTIFICATE_PASSWORD`、`APPLE_ID`、`APPLE_PASSWORD`。还需配置非敏感的仓库 **Variables**：`TAURI_UPDATER_PUBLIC_KEY`、`APPLE_SIGNING_IDENTITY`、`APPLE_TEAM_ID`。Tauri 更新私钥必须单独生成并加密保存，不能与 Windows / Apple 代码签名身份复用。
+
+每个正式 Release 还会附加：
+
+- `latest.json`：包含目标版本、发布时间、版本说明、脱离更新签名，以及 Windows x64、macOS Intel、macOS Apple Silicon、Linux x64 AppImage 对应的不可变标签资产地址；
+- `SHA256SUMS`：用于逐字节手工校验；
+- `release-manifest.json` 与 `release-manifest.json.sig`：对每个载荷记录文件名、字节大小、SHA-256、平台、架构、安装格式、代码签名状态与更新签名状态，并使用 Tauri 更新密钥保护清单；
+- `build-metadata.json`：记录 Tag、完整 commit SHA、仓库、GitHub Actions run ID / URL、UTC 构建时间、各 Runner 目标平台，以及 Go、Node、npm、Rust、Cargo、Tauri 工具链版本。
+
+### Linux 信任边界与手工校验
+
+Linux 没有统一的、由单一系统厂商提供的 Developer ID / Authenticode 式代码签名和公证信任链，本项目也不控制所有发行版的软件源签名体系。因此 Linux 页面与安装包元数据会明确记录 `platform-code-signing-unavailable`，不会伪装为已完成平台级代码签名。Tauri 更新签名用于阻止应用安装被篡改的自动更新载荷；SHA-256 用于手工确认下载的 `.deb`、`.rpm` 或 `.AppImage` 与 Release 中的原始字节完全一致。
+
+把正式 Release 的文件下载到同一目录后，可执行：
+
+```bash
+# Linux
+sha256sum --check SHA256SUMS
+
+# macOS
+shasum -a 256 -c SHA256SUMS
+xcrun stapler validate SpecRelay-*-macos-*-dmg.dmg
+spctl --assess --type open --context context:primary-signature -vv SpecRelay-*-macos-*-dmg.dmg
+```
+
+Windows 可先把 `Get-FileHash` 结果与 `SHA256SUMS` 对应行比较，再检查 Authenticode：
+
+```powershell
+Get-FileHash .\SpecRelay-*-windows-x64-nsis.exe -Algorithm SHA256
+Get-AuthenticodeSignature .\SpecRelay-*-windows-x64-nsis.exe | Format-List Status, StatusMessage, SignerCertificate
+```
+
+本地构建或手动触发的工作流可以不提供凭据。此时会禁用更新载荷、生成未签名的平台安装包，在输出目录写入 `UNOFFICIAL-BUILD.txt`，并由 `build-metadata-*.json` 记录 `official_release: false` 和准确签名状态；这些文件不得作为正式发布物传播。
 
 ### 构建与安装
 
@@ -97,6 +137,12 @@ docker compose -f deploy/docker-compose.yml up -d --wait postgres
 4. 生成计划后可手动执行，或打开自动化让已就绪的计划依序执行。
 
 SpecRelay 不设置 CLI 总超时时间；运行页面以终端样式显示简略日志，默认保留最新 50 条并可向上滚动加载更早内容。完整 CLI 原始日志仍受控地保存在应用数据目录中，前端不会直接读取任意本机文件。
+
+### 本地观测、聚合与隐私
+
+“CLI 运行”页面提供项目内的结构化观测：可按时间、Provider 和计划筛选，查看会话模式、重试链路、失败类别、排队/运行耗时、Token 与费用覆盖率，并导出 JSON 或 CSV。重试成功率按 `logicalOperationId` 归集，同一逻辑操作的多次物理调用只计算一次最终结果；费用始终按币种分别汇总，不执行汇率换算。Provider 未报告的 Token、费用或耗时显示为“不可用”，不会按 `0` 估算；只有 Provider 明确报告零用量时才记录为零。
+
+所有观测数据只进入**用户配置的 PostgreSQL** 和本机 `DATA_DIR/logs` 日志目录。SpecRelay 不提供也不发送云端遥测。查询和默认导出采用字段白名单，不包含工作区路径、完整 CLI 会话 ID、命令参数、环境变量、日志正文、原始错误正文、源码片段或疑似 Token。项目名称、工作区路径以及需求/计划/任务业务标题默认不导出；只有用户逐项选择并再次确认后，才会写入导出文件。
 
 ### 安全关闭与恢复
 

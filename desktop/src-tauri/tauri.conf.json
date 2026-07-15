@@ -17,7 +17,7 @@
     "active": true,
     "category": "DeveloperTool",
     "shortDescription": "Local-first CLI workflow manager",
-    "longDescription": "SpecRelay turns requirements into plans and local CLI-powered implementation workflows.",
+    "longDescription": "SpecRelay turns requirements into plans and local CLI-powered implementation workflows. Linux packages have no shared OS-vendor code-signing service; official updater signatures and SHA-256 release checksums protect and verify downloads.",
     "externalBin": [
       "binaries/specrelay"
     ],
@@ -35,6 +35,15 @@
       "icons/128x128@2x.png",
       "icons/icon.ico",
       "icons/icon.icns"
-    ]
+    ],
+    "createUpdaterArtifacts": false
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "",
+      "endpoints": [
+        "https://github.com/lence773/specrelay/releases/latest/download/latest.json"
+      ]
+    }
   }
 }

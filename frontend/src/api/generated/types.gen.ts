@@ -103,9 +103,17 @@ export type RequirementDiscussionRequest = {
      */
     sessionId?: string;
     /**
-     * Provider that created sessionId. A changed provider starts a new discussion session instead of attempting cross-provider resume.
+     * Provider that created sessionId. A changed provider starts a new discussion session instead of attempting cross-provider resume. Feedback discussions should omit client session identifiers because the server selects a stored session only after matching the feedback project, association, and provider.
      */
     sessionProvider?: CliProvider;
+    /**
+     * Optional feedback context for an independent revision discussion. It must belong to projectId; clients must not reuse session identifiers from another project, feedback item, or provider.
+     */
+    feedbackId?: string;
+    /**
+     * When true, feedbackId is required. If this round is ready, the server creates an independent revision requirement and may queue its plan according to project automation settings.
+     */
+    createRevision?: boolean;
     messages: Array<RequirementDiscussionMessage>;
 };
 
@@ -116,6 +124,23 @@ export type RequirementDiscussionResult = {
     body: string;
     ready: boolean;
     sessionId?: string;
+    revision?: FeedbackRevisionDiscussionResult;
+};
+
+export type FeedbackRevisionDiscussionResult = {
+    intake: Intake;
+    job?: Job | null;
+    revision: FeedbackRevision;
+};
+
+export type FeedbackRevision = {
+    id: string;
+    feedbackId: string;
+    projectId: string;
+    requirementId: string;
+    revisionIntake: Intake;
+    revisionPlan?: Plan;
+    createdAt: string;
 };
 
 export type IntakeStatus = 'open' | 'planning' | 'planned' | 'closed' | 'plan_failed';
@@ -133,6 +158,38 @@ export type IntakeInput = {
      */
     provider?: CliProvider;
     /**
+     * Feedback only. The plan must belong to parentIntakeId in this project.
+     */
+    planId?: string | null;
+    /**
+     * Feedback only. Requires planId and must belong to that plan.
+     */
+    taskId?: string | null;
+    /**
+     * Feedback only. Requires taskId and must be an immutable task checkpoint for that task.
+     */
+    checkpointId?: string | null;
+    /**
+     * Feedback only. Requires checkpointId and must identify a changed file in that checkpoint.
+     */
+    fileId?: string | null;
+    /**
+     * Feedback only. Requires fileId and must identify a hunk in that file.
+     */
+    diffHunkId?: string | null;
+    /**
+     * Feedback only. When present
+     */
+    diffLineSide?: 'old' | 'new';
+    /**
+     * Inclusive source or destination line according to diffLineSide.
+     */
+    diffLineStart?: number;
+    /**
+     * Inclusive source or destination line; must be within the selected hunk and not precede diffLineStart.
+     */
+    diffLineEnd?: number;
+    /**
      * Durable CLI session from the requirement discussion. Only valid when kind is requirement.
      */
     requirementSessionId?: string;
@@ -140,6 +197,219 @@ export type IntakeInput = {
      * Provider that created requirementSessionId. Only valid when kind is requirement.
      */
     requirementSessionProvider?: CliProvider;
+};
+
+export type FeedbackCreateInput = {
+    /**
+     * Direct parent requirement in the current project.
+     */
+    requirementId: string;
+    title: string;
+    body: string;
+    /**
+     * Optional provider override only for plan generation automatically queued for this feedback when project automation is enabled. When omitted, the client sends no provider and the server resolves the project's current setting without changing it.
+     */
+    provider?: CliProvider;
+    /**
+     * Optional plan owned by requirementId.
+     */
+    planId?: string | null;
+    /**
+     * Optional task; requires planId and must belong to it.
+     */
+    taskId?: string | null;
+    /**
+     * Optional immutable task checkpoint; requires taskId and must belong to it.
+     */
+    checkpointId?: string | null;
+    /**
+     * Optional changed file; requires checkpointId and must belong to it.
+     */
+    fileId?: string | null;
+    /**
+     * Optional Diff hunk; requires fileId and must belong to it.
+     */
+    diffHunkId?: string | null;
+    /**
+     * Side used to interpret the inclusive Diff line range.
+     */
+    diffLineSide?: 'old' | 'new';
+    /**
+     * Inclusive old/new line number within diffHunkId.
+     */
+    diffLineStart?: number;
+    /**
+     * Inclusive old/new line number within diffHunkId; must be at least diffLineStart.
+     */
+    diffLineEnd?: number;
+};
+
+export type FeedbackCreateResponse = {
+    feedback: Intake;
+    job?: Job | null;
+};
+
+export type FeedbackIntakeSummary = {
+    id: string;
+    title: string;
+    body: string;
+    status: string;
+    createdAt: string;
+    updatedAt: string;
+};
+
+export type FeedbackAssociationSummary = {
+    requirementId: string;
+    planId?: string;
+    taskId?: string;
+    checkpointId?: string;
+    fileId?: string;
+    diffHunkId?: string;
+    diffLineSide?: 'old' | 'new';
+    diffLineStart?: number;
+    diffLineEnd?: number;
+};
+
+export type FeedbackPlanSummary = {
+    id: string;
+    title: string;
+    status: string;
+    markdown: string;
+};
+
+export type FeedbackTaskSummary = {
+    id: string;
+    taskKey: string;
+    title: string;
+    status: string;
+    /**
+     * Size-bounded JSON text containing the task acceptance definition or legacy acceptance list.
+     */
+    acceptance: string;
+    acceptanceStatus: string;
+    /**
+     * Size-bounded JSON text containing the latest acceptance result.
+     */
+    acceptanceResult: string;
+};
+
+export type FeedbackCheckpointSummary = {
+    id: string;
+    sequence: number;
+    kind: string;
+    /**
+     * Size-bounded JSON text.
+     */
+    changeSummary: string;
+    gitHead: string;
+    createdAt: string;
+};
+
+export type FeedbackFileSummary = {
+    id: string;
+    path: string;
+    previousPath?: string;
+    status: string;
+    staged: boolean;
+    binary: boolean;
+    additions: number;
+    deletions: number;
+};
+
+export type FeedbackDiffSummary = {
+    hunkId: string;
+    header: string;
+    side?: 'old' | 'new';
+    startLine?: number;
+    endLine?: number;
+    /**
+     * Only selected old/new lines when a range was supplied; otherwise the selected hunk
+     */
+    snippet: string;
+};
+
+export type FeedbackRevisionStatus = 'not_started' | 'requested' | 'planning' | 'ready' | 'running' | 'completed' | 'failed' | 'blocked' | 'cancelled' | 'unknown';
+
+export type FeedbackRevisionSummary = {
+    id: string;
+    requirementId: string;
+    requirementTitle: string;
+    intakeStatus: string;
+    planId?: string;
+    planStatus?: string;
+    currentStatus: FeedbackRevisionStatus;
+    createdAt: string;
+};
+
+export type FeedbackRevisionState = {
+    currentStatus: FeedbackRevisionStatus;
+    items: Array<FeedbackRevisionSummary>;
+};
+
+export type FeedbackContext = {
+    feedback: FeedbackIntakeSummary;
+    requirement: FeedbackIntakeSummary;
+    association: FeedbackAssociationSummary;
+    plan?: FeedbackPlanSummary;
+    task?: FeedbackTaskSummary;
+    checkpoint?: FeedbackCheckpointSummary;
+    file?: FeedbackFileSummary;
+    diff?: FeedbackDiffSummary;
+    revision: FeedbackRevisionState;
+};
+
+export type FeedbackReference = {
+    id: string;
+    requirementId: string;
+    title: string;
+    feedbackStatus: string;
+    revisionStatus: FeedbackRevisionStatus;
+    createdAt: string;
+};
+
+export type PlanExecutionSnapshot = {
+    id: string;
+    projectId: string;
+    planId: string;
+    intakeId: string;
+    taskId?: string;
+    sequence: number;
+    kind: string;
+    changeSummary: {
+        [key: string]: unknown;
+    };
+    additions?: number;
+    deletions?: number;
+    files: Array<PlanExecutionSnapshotFile>;
+    createdAt: string;
+};
+
+export type PlanExecutionSnapshotFile = {
+    id: string;
+    snapshotId: string;
+    sequence: number;
+    path: string;
+    previousPath?: string;
+    status: string;
+    staged: boolean;
+    binary: boolean;
+    additions: number;
+    deletions: number;
+    hunks: Array<PlanExecutionSnapshotHunk>;
+    createdAt: string;
+};
+
+export type PlanExecutionSnapshotHunk = {
+    id: string;
+    fileId: string;
+    sequence: number;
+    header: string;
+    patch: string;
+    oldStartLine: number;
+    oldLineCount: number;
+    newStartLine: number;
+    newLineCount: number;
+    createdAt: string;
 };
 
 export type Intake = ResourceBase & {
@@ -171,7 +441,7 @@ export type Plan = ResourceBase & {
     title: string;
     spec: PlanSpec;
     markdown: string;
-    status: 'generating' | 'ready' | 'running' | 'validating' | 'completed' | 'blocked' | 'cancelled';
+    status: 'generating' | 'ready' | 'running' | 'validating' | 'blocked' | 'cancelling' | 'completed' | 'failed' | 'interrupted' | 'cancelled';
 };
 
 export type PlanTask = ResourceBase & {
@@ -182,7 +452,11 @@ export type PlanTask = ResourceBase & {
     title: string;
     scope: Array<string>;
     acceptance: Array<string>;
-    status: 'pending' | 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled';
+    acceptanceStatus?: 'pending' | 'passed' | 'failed';
+    acceptanceResult?: {
+        [key: string]: unknown;
+    };
+    status: 'pending' | 'queued' | 'running' | 'cancelling' | 'succeeded' | 'failed' | 'interrupted' | 'cancelled';
     sessionId?: string;
     startedAt?: string | null;
     finishedAt?: string | null;
@@ -218,12 +492,186 @@ export type AgentRun = ResourceBase & {
     commandSummary: string;
     pid?: number | null;
     sessionId?: string;
-    status: 'starting' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'timed_out';
+    status: 'starting' | 'running' | 'cancelling' | 'succeeded' | 'failed' | 'interrupted' | 'cancelled' | 'timed_out';
     exitCode?: number | null;
     durationMs: number;
     terminationReason?: string;
     startedAt: string;
     finishedAt?: string | null;
+};
+
+export type AgentRunProvider = CliProvider | 'validation';
+
+export type ObservabilityFilter = {
+    from?: string;
+    to?: string;
+    provider?: AgentRunProvider;
+    planId?: string;
+};
+
+export type ObservabilityPagination = {
+    page: number;
+    pageSize: number;
+    totalItems: number;
+    hasMore: boolean;
+};
+
+export type ObservabilityRequirement = {
+    id: string;
+    title?: string;
+    status: string;
+};
+
+export type ObservabilityPlan = {
+    id: string;
+    requirementId: string;
+    title?: string;
+    status: string;
+};
+
+export type ObservabilityTask = {
+    id: string;
+    planId: string;
+    taskKey: string;
+    title?: string;
+    status: string;
+};
+
+/**
+ * Redaction-safe physical call detail. It never contains a CLI session ID, command arguments, environment, raw error body, source, attachment content, or logs.
+ */
+export type ObservabilityAgentRun = {
+    id: string;
+    requirementId?: string;
+    planId?: string;
+    taskId?: string;
+    logicalOperationId?: string;
+    operationType?: 'requirement_discussion' | 'plan_generation' | 'task_execution' | 'validation';
+    jobAttempt?: number;
+    retryCount?: number;
+    provider: AgentRunProvider;
+    sessionMode?: 'new' | 'reused' | 'snapshot_restored' | 'not_applicable';
+    status: 'starting' | 'running' | 'cancelling' | 'succeeded' | 'failed' | 'interrupted' | 'cancelled' | 'timed_out';
+    exitCode?: number;
+    queueWaitMs?: number;
+    durationMs?: number;
+    failureCategory?: string;
+    outputBytes?: number;
+    outputLines?: number;
+    eventCount?: number;
+    outputTruncated?: boolean;
+    inputTokens?: number;
+    outputTokens?: number;
+    totalTokens?: number;
+    costAmount?: string;
+    costCurrency?: string;
+    startedAt: string;
+    finishedAt?: string;
+};
+
+export type ObservabilityRate = {
+    available: boolean;
+    numerator: number;
+    denominator: number;
+    value?: number;
+};
+
+export type ObservabilityFailureCount = {
+    category: string;
+    count: number;
+};
+
+export type ObservabilityDurationSummary = {
+    available: boolean;
+    coverageCount: number;
+    totalMs?: number;
+    averageMs?: number;
+};
+
+export type ObservabilityDurationTrend = {
+    bucket: string;
+    runCount: number;
+    queueWait: ObservabilityDurationSummary;
+    runDuration: ObservabilityDurationSummary;
+};
+
+export type ObservabilityTokenSummary = {
+    available: boolean;
+    coverageCount: number;
+    totalRunCount: number;
+    inputTokens?: number;
+    outputTokens?: number;
+    totalTokens?: number;
+};
+
+export type ObservabilityCurrencyCost = {
+    currency: string;
+    amount: string;
+    coverageCount: number;
+};
+
+export type ObservabilityCostSummary = {
+    available: boolean;
+    coverageCount: number;
+    totalRunCount: number;
+    currencies: Array<ObservabilityCurrencyCost>;
+};
+
+export type ObservabilityUsageSummary = {
+    tokens: ObservabilityTokenSummary;
+    costs: ObservabilityCostSummary;
+};
+
+export type ObservabilityUsageGroup = ObservabilityUsageSummary & {
+    key: string;
+    title?: string;
+};
+
+export type ObservabilityUsage = {
+    overall: ObservabilityUsageSummary;
+    byProvider: Array<ObservabilityUsageGroup>;
+    byRequirement: Array<ObservabilityUsageGroup>;
+    byPlan: Array<ObservabilityUsageGroup>;
+};
+
+export type AgentRunObservabilityAggregates = {
+    sessionReuseRate: ObservabilityRate;
+    snapshotRestoreRate: ObservabilityRate;
+    planGenerationSuccessRate: ObservabilityRate;
+    taskExecutionSuccessRate: ObservabilityRate;
+    failureCategories: Array<ObservabilityFailureCount>;
+    durationTrend: Array<ObservabilityDurationTrend>;
+    usage: ObservabilityUsage;
+};
+
+export type AgentRunObservabilitySummary = {
+    requirements: Array<ObservabilityRequirement>;
+    plans: Array<ObservabilityPlan>;
+    tasks: Array<ObservabilityTask>;
+    runs: Array<ObservabilityAgentRun>;
+    aggregates: AgentRunObservabilityAggregates;
+};
+
+export type AgentRunObservabilityResponse = AgentRunObservabilitySummary & {
+    projectId: string;
+    filter: ObservabilityFilter;
+    pagination: ObservabilityPagination;
+};
+
+export type ObservabilityExportOptions = {
+    includeProjectName: boolean;
+    includeWorkspacePath: boolean;
+    includeBusinessTitles: boolean;
+};
+
+export type AgentRunObservabilityExport = {
+    generatedAt: string;
+    projectId: string;
+    projectName?: string;
+    workspacePath?: string;
+    filter: ObservabilityFilter;
+    options: ObservabilityExportOptions;
+    summary: AgentRunObservabilitySummary;
 };
 
 export type CliProbeResult = {
@@ -318,6 +766,10 @@ export type IntakeId = string;
 export type PlanId = string;
 
 export type TaskId = string;
+
+export type FeedbackId = string;
+
+export type CheckpointId = string;
 
 export type ExchangeAccessTokenData = {
     body?: {
@@ -693,6 +1145,81 @@ export type DiscussRequirementResponses = {
 
 export type DiscussRequirementResponse = DiscussRequirementResponses[keyof DiscussRequirementResponses];
 
+export type CreateFeedbackData = {
+    body: FeedbackCreateInput;
+    path: {
+        projectId: string;
+    };
+    query?: never;
+    url: '/projects/{projectId}/feedback';
+};
+
+export type CreateFeedbackErrors = {
+    /**
+     * Error code is invalid_feedback_relation for a broken hierarchy or invalid_diff_range for an incomplete/out-of-hunk line range
+     */
+    400: Error;
+    /**
+     * Error code resource_forbidden; no referenced content from another project is returned
+     */
+    403: Error;
+    /**
+     * Error code resource_not_found; a referenced resource does not exist
+     */
+    404: Error;
+    /**
+     * Error response
+     */
+    default: Error;
+};
+
+export type CreateFeedbackError = CreateFeedbackErrors[keyof CreateFeedbackErrors];
+
+export type CreateFeedbackResponses = {
+    /**
+     * Feedback created
+     */
+    201: FeedbackCreateResponse;
+};
+
+export type CreateFeedbackResponse = CreateFeedbackResponses[keyof CreateFeedbackResponses];
+
+export type GetFeedbackContextData = {
+    body?: never;
+    path: {
+        projectId: string;
+        feedbackId: string;
+    };
+    query?: never;
+    url: '/projects/{projectId}/feedback/{feedbackId}';
+};
+
+export type GetFeedbackContextErrors = {
+    /**
+     * Error code resource_forbidden; feedback is not accessible in this project
+     */
+    403: Error;
+    /**
+     * Error response
+     */
+    404: Error;
+    /**
+     * Error response
+     */
+    default: Error;
+};
+
+export type GetFeedbackContextError = GetFeedbackContextErrors[keyof GetFeedbackContextErrors];
+
+export type GetFeedbackContextResponses = {
+    /**
+     * Bounded feedback context
+     */
+    200: FeedbackContext;
+};
+
+export type GetFeedbackContextResponse = GetFeedbackContextResponses[keyof GetFeedbackContextResponses];
+
 export type GetIntakeData = {
     body?: never;
     path: {
@@ -896,11 +1423,12 @@ export type GetPlanError = GetPlanErrors[keyof GetPlanErrors];
 
 export type GetPlanResponses = {
     /**
-     * Plan detail
+     * Plan detail with reverse feedback references
      */
     200: {
         plan: Plan;
         tasks: Array<PlanTask>;
+        feedback: Array<FeedbackReference>;
     };
 };
 
@@ -998,6 +1526,66 @@ export type StopPlanResponses = {
 
 export type StopPlanResponse = StopPlanResponses[keyof StopPlanResponses];
 
+export type GetTaskData = {
+    body?: never;
+    path: {
+        taskId: string;
+    };
+    query?: never;
+    url: '/tasks/{taskId}';
+};
+
+export type GetTaskErrors = {
+    /**
+     * Error response
+     */
+    default: Error;
+};
+
+export type GetTaskError = GetTaskErrors[keyof GetTaskErrors];
+
+export type GetTaskResponses = {
+    /**
+     * Task detail with reverse feedback references and current revision status
+     */
+    200: {
+        task: PlanTask;
+        feedback: Array<FeedbackReference>;
+    };
+};
+
+export type GetTaskResponse = GetTaskResponses[keyof GetTaskResponses];
+
+export type GetCheckpointData = {
+    body?: never;
+    path: {
+        checkpointId: string;
+    };
+    query?: never;
+    url: '/checkpoints/{checkpointId}';
+};
+
+export type GetCheckpointErrors = {
+    /**
+     * Error response
+     */
+    default: Error;
+};
+
+export type GetCheckpointError = GetCheckpointErrors[keyof GetCheckpointErrors];
+
+export type GetCheckpointResponses = {
+    /**
+     * Immutable checkpoint detail with reverse feedback references and current revision status
+     */
+    200: {
+        checkpoint: PlanExecutionSnapshot;
+        feedback: Array<FeedbackReference>;
+    };
+};
+
+export type GetCheckpointResponse = GetCheckpointResponses[keyof GetCheckpointResponses];
+
 export type RunTaskData = {
     body: TaskRunInput;
     path: {
@@ -1092,6 +1680,93 @@ export type ListAgentRunsResponses = {
 };
 
 export type ListAgentRunsResponse = ListAgentRunsResponses[keyof ListAgentRunsResponses];
+
+export type QueryProjectObservabilityData = {
+    body?: never;
+    path: {
+        projectId: string;
+    };
+    query?: {
+        /**
+         * Inclusive Agent Run start time
+         */
+        from?: string;
+        /**
+         * Inclusive Agent Run start time
+         */
+        to?: string;
+        provider?: AgentRunProvider;
+        /**
+         * Plan owned by the current project
+         */
+        planId?: string;
+        page?: number;
+        pageSize?: number;
+    };
+    url: '/projects/{projectId}/observability';
+};
+
+export type QueryProjectObservabilityErrors = {
+    /**
+     * Error response
+     */
+    400: Error;
+    /**
+     * Error response
+     */
+    default: Error;
+};
+
+export type QueryProjectObservabilityError = QueryProjectObservabilityErrors[keyof QueryProjectObservabilityErrors];
+
+export type QueryProjectObservabilityResponses = {
+    /**
+     * Filtered runs
+     */
+    200: AgentRunObservabilityResponse;
+};
+
+export type QueryProjectObservabilityResponse = QueryProjectObservabilityResponses[keyof QueryProjectObservabilityResponses];
+
+export type ExportProjectObservabilityData = {
+    body?: never;
+    path: {
+        projectId: string;
+    };
+    query?: {
+        from?: string;
+        to?: string;
+        provider?: AgentRunProvider;
+        planId?: string;
+        format?: 'json' | 'csv';
+        includeProjectName?: boolean;
+        includeWorkspacePath?: boolean;
+        includeBusinessTitles?: boolean;
+    };
+    url: '/projects/{projectId}/observability/export';
+};
+
+export type ExportProjectObservabilityErrors = {
+    /**
+     * Error response
+     */
+    400: Error;
+    /**
+     * Error response
+     */
+    default: Error;
+};
+
+export type ExportProjectObservabilityError = ExportProjectObservabilityErrors[keyof ExportProjectObservabilityErrors];
+
+export type ExportProjectObservabilityResponses = {
+    /**
+     * Local redacted summary download
+     */
+    200: AgentRunObservabilityExport;
+};
+
+export type ExportProjectObservabilityResponse = ExportProjectObservabilityResponses[keyof ExportProjectObservabilityResponses];
 
 export type GetAgentRunLogData = {
     body?: never;

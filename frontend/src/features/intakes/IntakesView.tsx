@@ -9,6 +9,13 @@ import type {
   RequirementDiscussionMessage,
 } from "../../api/types";
 import { Plus, Upload } from "../../components/Icons";
+import {
+  FeedbackComposer,
+  FeedbackDetailPanel,
+  RequirementFeedbackPanel,
+  type FeedbackDraft,
+  type FeedbackNavigationTarget,
+} from "../feedback/FeedbackViews";
 import { Empty, kindLabel, relative, Status } from "../../components/Status";
 
 type ProviderChoice = CLIProvider | undefined;
@@ -75,9 +82,13 @@ function ProviderSelector({
 export function IntakesView({
   project,
   intakes,
+  focus,
+  onNavigate,
 }: {
   project: Project;
   intakes: Intake[];
+  focus?: FeedbackNavigationTarget;
+  onNavigate?: (target: FeedbackNavigationTarget) => void;
 }) {
   const queryClient = useQueryClient();
   const [selected, setSelected] = useState<string | undefined>(intakes[0]?.id);
@@ -87,6 +98,7 @@ export function IntakesView({
   const [kind, setKind] = useState<"requirement" | "feedback">("requirement");
   const [feedbackParentID, setFeedbackParentID] = useState("");
   const [filter, setFilter] = useState<IntakeFilter>("all");
+  const [feedbackDraft, setFeedbackDraft] = useState<FeedbackDraft>();
   const [discussionOpen, setDiscussionOpen] = useState(false);
   const [discussionMessages, setDiscussionMessages] = useState<
     DiscussionMessage[]
@@ -98,7 +110,8 @@ export function IntakesView({
   const [existingPlanProvider, setExistingPlanProvider] =
     useState<ProviderChoice>();
   const [discussionReady, setDiscussionReady] = useState(false);
-  const [discussionCLISessionID, setDiscussionCLISessionID] = useState<string>();
+  const [discussionCLISessionID, setDiscussionCLISessionID] =
+    useState<string>();
   const [discussionSessionProvider, setDiscussionSessionProvider] =
     useState<CLIProvider>();
   const discussionSession = useRef(0);
@@ -109,9 +122,18 @@ export function IntakesView({
     setSelected(intakes[0]?.id);
   }, [intakes, selected]);
   useEffect(() => setExistingPlanProvider(undefined), [selected]);
+  useEffect(() => {
+    if (!focus || (focus.kind !== "intake" && focus.kind !== "feedback"))
+      return;
+    if (intakes.some((intake) => intake.id === focus.id)) {
+      setSelected(focus.id);
+      setCreating(false);
+    }
+  }, [focus, intakes]);
 
   const item = intakes.find((i) => i.id === selected);
-  const planGenerationAvailable = item ? canGeneratePlan(item.status) : false;
+  const planGenerationAvailable =
+    item?.kind === "requirement" && canGeneratePlan(item.status);
   const requirements = intakes.filter(
     (intake) => intake.kind === "requirement",
   );
@@ -119,10 +141,6 @@ export function IntakesView({
     filter === "all"
       ? intakes
       : intakes.filter((intake) => intake.kind === filter);
-  const feedbackParent =
-    item?.kind === "feedback" && item.parentIntakeId
-      ? intakes.find((intake) => intake.id === item.parentIntakeId)
-      : undefined;
   const relatedFeedback =
     item?.kind === "requirement"
       ? intakes.filter(
@@ -251,6 +269,15 @@ export function IntakesView({
     setExistingPlanProvider(undefined);
     generate.reset();
     closeCreate();
+  };
+  const navigateFromFeedback = (target: FeedbackNavigationTarget) => {
+    if (target.kind === "intake" || target.kind === "feedback") {
+      const exists = intakes.some((intake) => intake.id === target.id);
+      if (exists) selectIntake(target.id);
+      else onNavigate?.(target);
+      return;
+    }
+    onNavigate?.(target);
   };
   const sendDiscussionMessage = () => {
     const content = discussionInput.trim();
@@ -674,6 +701,20 @@ export function IntakesView({
                     创建于 {new Date(item.createdAt).toLocaleString("zh-CN")}
                   </small>
                 </div>
+                {item.kind === "requirement" && (
+                  <button
+                    type="button"
+                    className="button secondary small"
+                    onClick={() =>
+                      setFeedbackDraft({
+                        requirementId: item.id,
+                        requirementTitle: item.title,
+                      })
+                    }
+                  >
+                    创建反馈
+                  </button>
+                )}
               </header>
               <div
                 className="attachment-box"
@@ -759,45 +800,40 @@ export function IntakesView({
                 scrollbarGutter: "stable",
               }}
             >
-              {item.kind === "feedback" && (
-                <section className="feedback-context">
-                  <span>关联需求</span>
-                  {feedbackParent ? (
-                    <button
-                      type="button"
-                      onClick={() => selectIntake(feedbackParent.id)}
-                    >
-                      {feedbackParent.title}
-                    </button>
-                  ) : (
-                    <strong>关联需求已不存在</strong>
-                  )}
-                </section>
+              {item.kind === "feedback" ? (
+                <FeedbackDetailPanel
+                  project={project}
+                  feedbackId={item.id}
+                  intakes={intakes}
+                  onNavigate={navigateFromFeedback}
+                />
+              ) : (
+                <>
+                  <RequirementFeedbackPanel
+                    project={project}
+                    feedback={relatedFeedback}
+                    onOpen={(id) => selectIntake(id)}
+                  />
+                  <div className="intake-body">{item.body}</div>
+                </>
               )}
-              {item.kind === "requirement" && relatedFeedback.length > 0 && (
-                <section className="feedback-context related-feedback">
-                  <span>关联反馈（{relatedFeedback.length}）</span>
-                  <div>
-                    {relatedFeedback.map((feedback) => (
-                      <button
-                        type="button"
-                        key={feedback.id}
-                        onClick={() => selectIntake(feedback.id)}
-                      >
-                        {feedback.title}
-                        <Status value={feedback.status} />
-                      </button>
-                    ))}
-                  </div>
-                </section>
-              )}
-              <div className="intake-body">{item.body}</div>
             </div>
           </article>
         ) : (
           <Empty title="请选择一条需求" body="从左侧选择项目，查看详细内容。" />
         )}
       </section>
+      {feedbackDraft && (
+        <FeedbackComposer
+          project={project}
+          draft={feedbackDraft}
+          onClose={() => setFeedbackDraft(undefined)}
+          onCreated={(id) => {
+            setSelected(id);
+            onNavigate?.({ kind: "feedback", id });
+          }}
+        />
+      )}
     </div>
   );
 }

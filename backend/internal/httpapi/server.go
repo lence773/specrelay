@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/subtle"
+	"encoding/csv"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -54,6 +55,49 @@ type asyncResponse struct {
 	ResourceVersion int64     `json:"resourceVersion"`
 }
 
+type feedbackAssociationInput struct {
+	PlanID        *uuid.UUID `json:"planId,omitempty"`
+	TaskID        *uuid.UUID `json:"taskId,omitempty"`
+	CheckpointID  *uuid.UUID `json:"checkpointId,omitempty"`
+	FileID        *uuid.UUID `json:"fileId,omitempty"`
+	DiffHunkID    *uuid.UUID `json:"diffHunkId,omitempty"`
+	DiffLineSide  string     `json:"diffLineSide,omitempty"`
+	DiffLineStart *int       `json:"diffLineStart,omitempty"`
+	DiffLineEnd   *int       `json:"diffLineEnd,omitempty"`
+}
+
+func (in feedbackAssociationInput) repositoryParams() *repository.FeedbackAssociationParams {
+	return &repository.FeedbackAssociationParams{
+		PlanID:        in.PlanID,
+		TaskID:        in.TaskID,
+		CheckpointID:  in.CheckpointID,
+		FileID:        in.FileID,
+		DiffHunkID:    in.DiffHunkID,
+		DiffLineSide:  in.DiffLineSide,
+		DiffLineStart: in.DiffLineStart,
+		DiffLineEnd:   in.DiffLineEnd,
+	}
+}
+
+type intakeCreateInput struct {
+	Kind                       string     `json:"kind"`
+	ParentIntakeID             *uuid.UUID `json:"parentIntakeId"`
+	Title                      string     `json:"title"`
+	Body                       string     `json:"body"`
+	Provider                   string     `json:"provider,omitempty"`
+	RequirementSessionID       string     `json:"requirementSessionId,omitempty"`
+	RequirementSessionProvider string     `json:"requirementSessionProvider,omitempty"`
+	feedbackAssociationInput
+}
+
+type feedbackCreateInput struct {
+	RequirementID uuid.UUID `json:"requirementId"`
+	Title         string    `json:"title"`
+	Body          string    `json:"body"`
+	Provider      string    `json:"provider,omitempty"`
+	feedbackAssociationInput
+}
+
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", s.health)
@@ -73,6 +117,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/projects/{id}/intakes", s.intakes)
 	mux.HandleFunc("POST /api/v1/projects/{id}/intakes", s.intakes)
 	mux.HandleFunc("POST /api/v1/projects/{id}/intakes/discuss", s.discussRequirement)
+	mux.HandleFunc("POST /api/v1/projects/{id}/feedback", s.createFeedback)
+	mux.HandleFunc("GET /api/v1/projects/{id}/feedback/{feedbackId}", s.feedbackContext)
 	mux.HandleFunc("GET /api/v1/intakes/{id}", s.intake)
 	mux.HandleFunc("PUT /api/v1/intakes/{id}", s.intake)
 	mux.HandleFunc("POST /api/v1/intakes/{id}/generate", s.generatePlan)
@@ -83,10 +129,14 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/plans/{id}/run", s.runPlan)
 	mux.HandleFunc("POST /api/v1/plans/{id}/stop", s.stopPlan)
 	mux.HandleFunc("GET /api/v1/plans/{id}/tasks", s.tasks)
+	mux.HandleFunc("GET /api/v1/tasks/{id}", s.task)
+	mux.HandleFunc("GET /api/v1/checkpoints/{id}", s.checkpoint)
 	mux.HandleFunc("POST /api/v1/tasks/{id}/run", s.runTask)
 	mux.HandleFunc("POST /api/v1/tasks/{id}/retry", s.runTask)
 	mux.HandleFunc("POST /api/v1/tasks/{id}/stop", s.stopTask)
 	mux.HandleFunc("GET /api/v1/projects/{id}/agent-runs", s.agentRuns)
+	mux.HandleFunc("GET /api/v1/projects/{id}/observability", s.agentRunObservability)
+	mux.HandleFunc("GET /api/v1/projects/{id}/observability/export", s.exportAgentRunObservability)
 	mux.HandleFunc("GET /api/v1/agent-runs/{id}/log", s.agentRunLog)
 	mux.HandleFunc("POST /api/v1/agents/probe", s.probeAgent)
 	mux.HandleFunc("POST /api/v1/settings/mcp-token/rotate", s.rotateMCPToken)
@@ -346,26 +396,61 @@ func (s *Server) intakes(w http.ResponseWriter, r *http.Request) {
 		respond(w, r, items, err)
 		return
 	}
-	var in struct {
-		Kind                       string     `json:"kind"`
-		ParentIntakeID             *uuid.UUID `json:"parentIntakeId"`
-		Title                      string     `json:"title"`
-		Body                       string     `json:"body"`
-		Provider                   string     `json:"provider,omitempty"`
-		RequirementSessionID       string     `json:"requirementSessionId,omitempty"`
-		RequirementSessionProvider string     `json:"requirementSessionProvider,omitempty"`
-	}
+	var in intakeCreateInput
 	if err := decodeJSON(r, &in); err != nil {
 		badJSON(w, r, err)
 		return
 	}
-	item, job, err := s.App.CreateIntakeWithProvider(repository.WithExecutionProvider(r.Context(), in.Provider), repository.CreateIntakeParams{ProjectID: projectID, Kind: in.Kind, ParentIntakeID: in.ParentIntakeID, Title: in.Title, Body: in.Body, RequirementSessionID: in.RequirementSessionID, RequirementSessionProvider: in.RequirementSessionProvider}, in.Provider)
+	params := repository.CreateIntakeParams{ProjectID: projectID, Kind: in.Kind, ParentIntakeID: in.ParentIntakeID, Title: in.Title, Body: in.Body, RequirementSessionID: in.RequirementSessionID, RequirementSessionProvider: in.RequirementSessionProvider}
+	if in.Kind == "feedback" {
+		params.Feedback = in.feedbackAssociationInput.repositoryParams()
+	}
+	item, job, err := s.App.CreateIntakeWithProvider(repository.WithExecutionProvider(r.Context(), in.Provider), params, in.Provider)
 	if err != nil {
 		respond(w, r, nil, err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{"intake": item, "job": job})
 }
+func (s *Server) createFeedback(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := pathUUID(w, r, "id")
+	if !ok {
+		return
+	}
+	var in feedbackCreateInput
+	if err := decodeJSON(r, &in); err != nil {
+		badJSON(w, r, err)
+		return
+	}
+	params := repository.CreateIntakeParams{
+		ProjectID:      projectID,
+		Kind:           "feedback",
+		ParentIntakeID: &in.RequirementID,
+		Title:          in.Title,
+		Body:           in.Body,
+		Feedback:       in.feedbackAssociationInput.repositoryParams(),
+	}
+	item, job, err := s.App.CreateIntakeWithProvider(repository.WithExecutionProvider(r.Context(), in.Provider), params, in.Provider)
+	if err != nil {
+		respond(w, r, nil, err)
+		return
+	}
+	writeJSON(w, http.StatusCreated, map[string]any{"feedback": item, "job": job})
+}
+
+func (s *Server) feedbackContext(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := pathUUID(w, r, "id")
+	if !ok {
+		return
+	}
+	feedbackID, ok := pathUUID(w, r, "feedbackId")
+	if !ok {
+		return
+	}
+	context, err := s.App.GetFeedbackContext(r.Context(), projectID, feedbackID)
+	respond(w, r, context, err)
+}
+
 func (s *Server) discussRequirement(w http.ResponseWriter, r *http.Request) {
 	projectID, ok := pathUUID(w, r, "id")
 	if !ok {
@@ -469,7 +554,12 @@ func (s *Server) plan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tasks, err := s.Store.ListTasks(r.Context(), id)
-	respond(w, r, map[string]any{"plan": p, "tasks": tasks}, err)
+	if err != nil {
+		respond(w, r, nil, err)
+		return
+	}
+	feedback, err := s.App.ListFeedbackForPlan(r.Context(), p.ProjectID, p.ID)
+	respond(w, r, map[string]any{"plan": p, "tasks": tasks, "feedback": feedback}, err)
 }
 
 func (s *Server) runPlan(w http.ResponseWriter, r *http.Request) {
@@ -520,6 +610,34 @@ func (s *Server) tasks(w http.ResponseWriter, r *http.Request) {
 	items, err := s.Store.ListTasks(r.Context(), id)
 	respond(w, r, items, err)
 }
+func (s *Server) task(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathUUID(w, r, "id")
+	if !ok {
+		return
+	}
+	task, err := s.Store.GetTask(r.Context(), id)
+	if err != nil {
+		respond(w, r, nil, err)
+		return
+	}
+	feedback, err := s.App.ListFeedbackForTask(r.Context(), task.ProjectID, task.ID)
+	respond(w, r, map[string]any{"task": task, "feedback": feedback}, err)
+}
+
+func (s *Server) checkpoint(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathUUID(w, r, "id")
+	if !ok {
+		return
+	}
+	checkpoint, err := s.Store.GetPlanExecutionSnapshot(r.Context(), id)
+	if err != nil {
+		respond(w, r, nil, err)
+		return
+	}
+	feedback, err := s.App.ListFeedbackForCheckpoint(r.Context(), checkpoint.ProjectID, checkpoint.ID)
+	respond(w, r, map[string]any{"checkpoint": checkpoint, "feedback": feedback}, err)
+}
+
 func (s *Server) runTask(w http.ResponseWriter, r *http.Request) {
 	id, ok := pathUUID(w, r, "id")
 	if !ok {
@@ -576,6 +694,420 @@ func (s *Server) agentRuns(w http.ResponseWriter, r *http.Request) {
 	}
 	items, err := s.Store.ListAgentRuns(r.Context(), projectID, limit)
 	respond(w, r, items, err)
+}
+
+type observabilityRequest struct {
+	Filter   repository.AgentRunObservabilityFilter
+	Page     int
+	PageSize int
+}
+
+type observabilityFilterResponse struct {
+	From     *time.Time `json:"from,omitempty"`
+	To       *time.Time `json:"to,omitempty"`
+	Provider string     `json:"provider,omitempty"`
+	PlanID   *uuid.UUID `json:"planId,omitempty"`
+}
+
+type observabilityPagination struct {
+	Page       int  `json:"page"`
+	PageSize   int  `json:"pageSize"`
+	TotalItems int  `json:"totalItems"`
+	HasMore    bool `json:"hasMore"`
+}
+
+type agentRunObservabilityResponse struct {
+	ProjectID  uuid.UUID                   `json:"projectId"`
+	Filter     observabilityFilterResponse `json:"filter"`
+	Pagination observabilityPagination     `json:"pagination"`
+	repository.AgentRunObservability
+}
+
+func parseObservabilityRequest(w http.ResponseWriter, r *http.Request, projectID uuid.UUID) (observabilityRequest, bool) {
+	request := observabilityRequest{Filter: repository.AgentRunObservabilityFilter{ProjectID: projectID}, Page: 1, PageSize: 50}
+	query := r.URL.Query()
+	parseTime := func(name string) (*time.Time, bool) {
+		raw := strings.TrimSpace(query.Get(name))
+		if raw == "" {
+			return nil, true
+		}
+		value, err := time.Parse(time.RFC3339, raw)
+		if err != nil {
+			writeError(w, r, http.StatusBadRequest, "invalid_time", name+" must be an RFC3339 timestamp", nil)
+			return nil, false
+		}
+		return &value, true
+	}
+	var ok bool
+	if request.Filter.From, ok = parseTime("from"); !ok {
+		return observabilityRequest{}, false
+	}
+	if request.Filter.To, ok = parseTime("to"); !ok {
+		return observabilityRequest{}, false
+	}
+	if request.Filter.From != nil && request.Filter.To != nil && request.Filter.From.After(*request.Filter.To) {
+		writeError(w, r, http.StatusBadRequest, "invalid_time_range", "from must be earlier than or equal to to", nil)
+		return observabilityRequest{}, false
+	}
+	request.Filter.Provider = strings.TrimSpace(query.Get("provider"))
+	switch request.Filter.Provider {
+	case "", "codex", "claude", "validation":
+	default:
+		writeError(w, r, http.StatusBadRequest, "invalid_provider", "provider must be codex, claude, or validation", nil)
+		return observabilityRequest{}, false
+	}
+	if raw := strings.TrimSpace(query.Get("planId")); raw != "" {
+		planID, err := uuid.Parse(raw)
+		if err != nil {
+			writeError(w, r, http.StatusBadRequest, "invalid_plan", "planId must be a UUID belonging to the current project", nil)
+			return observabilityRequest{}, false
+		}
+		request.Filter.PlanID = &planID
+	}
+	if raw := strings.TrimSpace(query.Get("page")); raw != "" {
+		page, err := strconv.Atoi(raw)
+		if err != nil || page < 1 {
+			writeError(w, r, http.StatusBadRequest, "invalid_page", "page must be a positive integer", nil)
+			return observabilityRequest{}, false
+		}
+		request.Page = page
+	}
+	if raw := strings.TrimSpace(query.Get("pageSize")); raw != "" {
+		pageSize, err := strconv.Atoi(raw)
+		if err != nil || pageSize < 1 || pageSize > 200 {
+			writeError(w, r, http.StatusBadRequest, "invalid_page_size", "pageSize must be between 1 and 200", nil)
+			return observabilityRequest{}, false
+		}
+		request.PageSize = pageSize
+	}
+	return request, true
+}
+
+func (s *Server) loadAgentRunObservability(w http.ResponseWriter, r *http.Request, projectID uuid.UUID) (domain.Project, observabilityRequest, repository.AgentRunObservability, bool) {
+	request, ok := parseObservabilityRequest(w, r, projectID)
+	if !ok {
+		return domain.Project{}, observabilityRequest{}, repository.AgentRunObservability{}, false
+	}
+	project, err := s.Store.GetProject(r.Context(), projectID)
+	if err != nil {
+		respond(w, r, nil, err)
+		return domain.Project{}, observabilityRequest{}, repository.AgentRunObservability{}, false
+	}
+	if request.Filter.PlanID != nil {
+		plan, planErr := s.Store.GetPlan(r.Context(), *request.Filter.PlanID)
+		if errors.Is(planErr, domain.ErrNotFound) || planErr == nil && plan.ProjectID != projectID {
+			writeError(w, r, http.StatusBadRequest, "invalid_plan", "planId must belong to the current project", nil)
+			return domain.Project{}, observabilityRequest{}, repository.AgentRunObservability{}, false
+		}
+		if planErr != nil {
+			respond(w, r, nil, planErr)
+			return domain.Project{}, observabilityRequest{}, repository.AgentRunObservability{}, false
+		}
+	}
+	result, err := s.Store.QueryAgentRunObservability(r.Context(), request.Filter)
+	if err != nil {
+		respond(w, r, nil, err)
+		return domain.Project{}, observabilityRequest{}, repository.AgentRunObservability{}, false
+	}
+	return project, request, result, true
+}
+
+func (s *Server) agentRunObservability(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := pathUUID(w, r, "id")
+	if !ok {
+		return
+	}
+	_, request, result, ok := s.loadAgentRunObservability(w, r, projectID)
+	if !ok {
+		return
+	}
+	total := len(result.Runs)
+	start := total
+	pageOffset := request.Page - 1
+	if pageOffset <= total/request.PageSize {
+		start = pageOffset * request.PageSize
+		if start > total {
+			start = total
+		}
+	}
+	end := total
+	if request.PageSize <= total-start {
+		end = start + request.PageSize
+	}
+	result.Runs = result.Runs[start:end]
+	writeJSON(w, http.StatusOK, agentRunObservabilityResponse{
+		ProjectID:             projectID,
+		Filter:                observabilityFilterResponse{From: request.Filter.From, To: request.Filter.To, Provider: request.Filter.Provider, PlanID: request.Filter.PlanID},
+		Pagination:            observabilityPagination{Page: request.Page, PageSize: request.PageSize, TotalItems: total, HasMore: end < total},
+		AgentRunObservability: result,
+	})
+}
+
+type observabilityExportOptions struct {
+	IncludeProjectName    bool `json:"includeProjectName"`
+	IncludeWorkspacePath  bool `json:"includeWorkspacePath"`
+	IncludeBusinessTitles bool `json:"includeBusinessTitles"`
+}
+
+type observabilityExportDocument struct {
+	GeneratedAt   time.Time                        `json:"generatedAt"`
+	ProjectID     uuid.UUID                        `json:"projectId"`
+	ProjectName   *string                          `json:"projectName,omitempty"`
+	WorkspacePath *string                          `json:"workspacePath,omitempty"`
+	Filter        observabilityFilterResponse      `json:"filter"`
+	Options       observabilityExportOptions       `json:"options"`
+	Summary       repository.AgentRunObservability `json:"summary"`
+}
+
+func parseQueryBool(w http.ResponseWriter, r *http.Request, name string) (bool, bool) {
+	switch strings.TrimSpace(r.URL.Query().Get(name)) {
+	case "":
+		return false, true
+	case "true":
+		return true, true
+	case "false":
+		return false, true
+	default:
+		writeError(w, r, http.StatusBadRequest, "invalid_export_option", name+" must be true or false", nil)
+		return false, false
+	}
+}
+
+func (s *Server) exportAgentRunObservability(w http.ResponseWriter, r *http.Request) {
+	projectID, ok := pathUUID(w, r, "id")
+	if !ok {
+		return
+	}
+	format := strings.TrimSpace(r.URL.Query().Get("format"))
+	if format == "" {
+		format = "json"
+	}
+	if format != "json" && format != "csv" {
+		writeError(w, r, http.StatusBadRequest, "invalid_export_format", "format must be json or csv", nil)
+		return
+	}
+	options := observabilityExportOptions{}
+	if options.IncludeProjectName, ok = parseQueryBool(w, r, "includeProjectName"); !ok {
+		return
+	}
+	if options.IncludeWorkspacePath, ok = parseQueryBool(w, r, "includeWorkspacePath"); !ok {
+		return
+	}
+	if options.IncludeBusinessTitles, ok = parseQueryBool(w, r, "includeBusinessTitles"); !ok {
+		return
+	}
+	project, request, result, ok := s.loadAgentRunObservability(w, r, projectID)
+	if !ok {
+		return
+	}
+	if !options.IncludeBusinessTitles {
+		redactObservabilityTitles(&result)
+	}
+	document := observabilityExportDocument{
+		GeneratedAt: time.Now().UTC(), ProjectID: projectID,
+		Filter:  observabilityFilterResponse{From: request.Filter.From, To: request.Filter.To, Provider: request.Filter.Provider, PlanID: request.Filter.PlanID},
+		Options: options, Summary: result,
+	}
+	if options.IncludeProjectName {
+		document.ProjectName = &project.Name
+	}
+	if options.IncludeWorkspacePath {
+		document.WorkspacePath = &project.WorkspacePath
+	}
+	filename := "specrelay-observability-" + document.GeneratedAt.Format("20060102T150405Z") + "." + format
+	w.Header().Set("Content-Disposition", `attachment; filename="`+filename+`"`)
+	if format == "json" {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(document)
+		return
+	}
+	body, err := marshalObservabilityCSV(document)
+	if err != nil {
+		respond(w, r, nil, err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
+}
+
+func redactObservabilityTitles(result *repository.AgentRunObservability) {
+	for index := range result.Requirements {
+		result.Requirements[index].Title = ""
+	}
+	for index := range result.Plans {
+		result.Plans[index].Title = ""
+	}
+	for index := range result.Tasks {
+		result.Tasks[index].Title = ""
+	}
+	for index := range result.Aggregates.Usage.ByRequirement {
+		result.Aggregates.Usage.ByRequirement[index].Title = ""
+	}
+	for index := range result.Aggregates.Usage.ByPlan {
+		result.Aggregates.Usage.ByPlan[index].Title = ""
+	}
+}
+
+func marshalObservabilityCSV(document observabilityExportDocument) ([]byte, error) {
+	var buffer bytes.Buffer
+	writer := csv.NewWriter(&buffer)
+	header := []string{"section", "key", "projectId", "requirementId", "planId", "taskId", "runId", "title", "provider", "operationType", "sessionMode", "retryCount", "queueWaitMs", "durationMs", "status", "failureCategory", "outputBytes", "outputLines", "eventCount", "outputTruncated", "inputTokens", "outputTokens", "totalTokens", "costAmount", "costCurrency", "value", "numerator", "denominator", "coverageCount", "totalCount", "available", "bucket"}
+	if err := writer.Write(header); err != nil {
+		return nil, err
+	}
+	row := func(values map[string]string) error {
+		entry := make([]string, len(header))
+		for index, column := range header {
+			entry[index] = values[column]
+		}
+		return writer.Write(entry)
+	}
+	if document.ProjectName != nil {
+		if err := row(map[string]string{"section": "metadata", "key": "projectName", "value": *document.ProjectName}); err != nil {
+			return nil, err
+		}
+	}
+	if document.WorkspacePath != nil {
+		if err := row(map[string]string{"section": "metadata", "key": "workspacePath", "value": *document.WorkspacePath}); err != nil {
+			return nil, err
+		}
+	}
+	for _, item := range document.Summary.Requirements {
+		if err := row(map[string]string{"section": "requirement", "projectId": document.ProjectID.String(), "requirementId": item.ID.String(), "title": item.Title, "status": item.Status}); err != nil {
+			return nil, err
+		}
+	}
+	for _, item := range document.Summary.Plans {
+		if err := row(map[string]string{"section": "plan", "projectId": document.ProjectID.String(), "requirementId": item.RequirementID.String(), "planId": item.ID.String(), "title": item.Title, "status": item.Status}); err != nil {
+			return nil, err
+		}
+	}
+	for _, item := range document.Summary.Tasks {
+		if err := row(map[string]string{"section": "task", "projectId": document.ProjectID.String(), "planId": item.PlanID.String(), "taskId": item.ID.String(), "key": item.TaskKey, "title": item.Title, "status": item.Status}); err != nil {
+			return nil, err
+		}
+	}
+	for _, item := range document.Summary.Runs {
+		values := map[string]string{"section": "run", "projectId": document.ProjectID.String(), "runId": item.ID.String(), "provider": item.Provider, "status": item.Status}
+		setUUIDString(values, "requirementId", item.RequirementID)
+		setUUIDString(values, "planId", item.PlanID)
+		setUUIDString(values, "taskId", item.TaskID)
+		setString(values, "operationType", item.OperationType)
+		setString(values, "sessionMode", item.SessionMode)
+		setInt(values, "retryCount", item.RetryCount)
+		setInt64(values, "queueWaitMs", item.QueueWaitMS)
+		setInt64(values, "durationMs", item.DurationMS)
+		setString(values, "failureCategory", item.FailureCategory)
+		setInt64(values, "outputBytes", item.OutputBytes)
+		setInt64(values, "outputLines", item.OutputLines)
+		setInt64(values, "eventCount", item.EventCount)
+		if item.OutputTruncated != nil {
+			values["outputTruncated"] = strconv.FormatBool(*item.OutputTruncated)
+		}
+		setInt64(values, "inputTokens", item.InputTokens)
+		setInt64(values, "outputTokens", item.OutputTokens)
+		setInt64(values, "totalTokens", item.TotalTokens)
+		setString(values, "costAmount", item.CostAmount)
+		setString(values, "costCurrency", item.CostCurrency)
+		if err := row(values); err != nil {
+			return nil, err
+		}
+	}
+	rates := []struct {
+		name  string
+		value repository.ObservabilityRate
+	}{
+		{"sessionReuseRate", document.Summary.Aggregates.SessionReuseRate},
+		{"snapshotRestoreRate", document.Summary.Aggregates.SnapshotRestoreRate},
+		{"planGenerationSuccessRate", document.Summary.Aggregates.PlanGenerationSuccessRate},
+		{"taskExecutionSuccessRate", document.Summary.Aggregates.TaskExecutionSuccessRate},
+	}
+	for _, rate := range rates {
+		values := map[string]string{"section": "rate", "key": rate.name, "numerator": strconv.Itoa(rate.value.Numerator), "denominator": strconv.Itoa(rate.value.Denominator)}
+		if rate.value.Value != nil {
+			values["value"] = strconv.FormatFloat(*rate.value.Value, 'f', -1, 64)
+		}
+		if err := row(values); err != nil {
+			return nil, err
+		}
+	}
+	for _, item := range document.Summary.Aggregates.FailureCategories {
+		if err := row(map[string]string{"section": "failureCategory", "key": item.Category, "value": strconv.Itoa(item.Count)}); err != nil {
+			return nil, err
+		}
+	}
+	for _, item := range document.Summary.Aggregates.DurationTrend {
+		if err := row(map[string]string{"section": "queueWaitTrend", "bucket": item.Bucket, "totalCount": strconv.Itoa(item.RunCount), "queueWaitMs": strconv.FormatInt(item.QueueWait.AverageMS, 10), "coverageCount": strconv.Itoa(item.QueueWait.CoverageCount), "available": strconv.FormatBool(item.QueueWait.Available)}); err != nil {
+			return nil, err
+		}
+		if err := row(map[string]string{"section": "runDurationTrend", "bucket": item.Bucket, "totalCount": strconv.Itoa(item.RunCount), "durationMs": strconv.FormatInt(item.RunDuration.AverageMS, 10), "coverageCount": strconv.Itoa(item.RunDuration.CoverageCount), "available": strconv.FormatBool(item.RunDuration.Available)}); err != nil {
+			return nil, err
+		}
+	}
+	writeUsage := func(section, key, title string, usage repository.ObservabilityUsageSummary) error {
+		values := map[string]string{"section": section + "Tokens", "key": key, "title": title, "coverageCount": strconv.Itoa(usage.Tokens.CoverageCount), "totalCount": strconv.Itoa(usage.Tokens.TotalRunCount), "available": strconv.FormatBool(usage.Tokens.Available)}
+		setInt64(values, "inputTokens", usage.Tokens.InputTokens)
+		setInt64(values, "outputTokens", usage.Tokens.OutputTokens)
+		setInt64(values, "totalTokens", usage.Tokens.TotalTokens)
+		if err := row(values); err != nil {
+			return err
+		}
+		if err := row(map[string]string{"section": section + "Costs", "key": key, "title": title, "coverageCount": strconv.Itoa(usage.Costs.CoverageCount), "totalCount": strconv.Itoa(usage.Costs.TotalRunCount), "available": strconv.FormatBool(usage.Costs.Available)}); err != nil {
+			return err
+		}
+		for _, cost := range usage.Costs.Currencies {
+			if err := row(map[string]string{"section": section + "CostCurrency", "key": key, "title": title, "costAmount": cost.Amount, "costCurrency": cost.Currency, "coverageCount": strconv.Itoa(cost.CoverageCount), "totalCount": strconv.Itoa(usage.Costs.TotalRunCount), "available": "true"}); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if err := writeUsage("usageOverall", "overall", "", document.Summary.Aggregates.Usage.Overall); err != nil {
+		return nil, err
+	}
+	usageRows := []struct {
+		section string
+		groups  []repository.ObservabilityUsageGroup
+	}{
+		{"usageProvider", document.Summary.Aggregates.Usage.ByProvider},
+		{"usageRequirement", document.Summary.Aggregates.Usage.ByRequirement},
+		{"usagePlan", document.Summary.Aggregates.Usage.ByPlan},
+	}
+	for _, grouped := range usageRows {
+		for _, item := range grouped.groups {
+			if err := writeUsage(grouped.section, item.Key, item.Title, item.ObservabilityUsageSummary); err != nil {
+				return nil, err
+			}
+		}
+	}
+	writer.Flush()
+	if err := writer.Error(); err != nil {
+		return nil, err
+	}
+	return buffer.Bytes(), nil
+}
+
+func setUUIDString(values map[string]string, key string, value *uuid.UUID) {
+	if value != nil {
+		values[key] = value.String()
+	}
+}
+func setString(values map[string]string, key string, value *string) {
+	if value != nil {
+		values[key] = *value
+	}
+}
+func setInt(values map[string]string, key string, value *int) {
+	if value != nil {
+		values[key] = strconv.Itoa(*value)
+	}
+}
+func setInt64(values map[string]string, key string, value *int64) {
+	if value != nil {
+		values[key] = strconv.FormatInt(*value, 10)
+	}
 }
 
 const defaultAgentRunLogLines = 50
@@ -635,17 +1167,16 @@ func readAgentRunLog(dataDir, logPath string, before *int64, limit int) ([]strin
 	if strings.TrimSpace(dataDir) == "" {
 		return nil, 0, false, nil, time.Time{}, errors.New("data directory is not configured")
 	}
-	root, err := filepath.Abs(filepath.Join(dataDir, "logs"))
-	if err != nil {
-		return nil, 0, false, nil, time.Time{}, err
-	}
 	target, err := filepath.Abs(logPath)
 	if err != nil {
 		return nil, 0, false, nil, time.Time{}, err
 	}
-	rel, err := filepath.Rel(root, target)
-	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(os.PathSeparator)) || filepath.IsAbs(rel) {
-		return nil, 0, false, nil, time.Time{}, errors.New("agent log path is outside the application log directory")
+	roots, err := agentRunLogRoots(dataDir)
+	if err != nil {
+		return nil, 0, false, nil, time.Time{}, err
+	}
+	if !pathWithinAnyRoot(roots, target) {
+		return nil, 0, false, nil, time.Time{}, errors.New("agent log path is outside the application log directories")
 	}
 	body, err := os.ReadFile(target)
 	if os.IsNotExist(err) {
@@ -688,6 +1219,65 @@ func readAgentRunLog(dataDir, logPath string, before *int64, limit int) ([]strin
 		nextBefore = &cursor
 	}
 	return lines, size, hasMore, nextBefore, info.ModTime(), nil
+}
+
+const desktopAppIdentifier = "com.lyming99.specrelay"
+
+// agentRunLogRoots returns the current backend's log directory plus the two
+// historical locations used by SpecRelay on the same local user account:
+// direct host-backend configurations and the packaged Tauri desktop app.
+//
+// Agent-run paths live in the shared database. A desktop app can therefore
+// display a run that was produced earlier by a host backend (and vice versa).
+// Restricting reads to only the *current* DATA_DIR made those legitimate logs
+// look like path traversal attempts. The list remains deliberately fixed to
+// SpecRelay-owned data locations; arbitrary paths from the database are never
+// accepted.
+func agentRunLogRoots(dataDir string) ([]string, error) {
+	candidates := []string{filepath.Join(dataDir, "logs")}
+	if configDir, err := os.UserConfigDir(); err == nil && strings.TrimSpace(configDir) != "" {
+		candidates = append(candidates,
+			filepath.Join(configDir, "specrelay", "logs"),
+			filepath.Join(configDir, "specrelay-production", "logs"),
+			filepath.Join(configDir, desktopAppIdentifier, "data", "logs"),
+		)
+	}
+	if dataHome := strings.TrimSpace(os.Getenv("XDG_DATA_HOME")); dataHome != "" {
+		candidates = append(candidates, filepath.Join(dataHome, desktopAppIdentifier, "data", "logs"))
+	} else if home, err := os.UserHomeDir(); err == nil && strings.TrimSpace(home) != "" {
+		candidates = append(candidates,
+			filepath.Join(home, ".local", "share", desktopAppIdentifier, "data", "logs"),
+			filepath.Join(home, "Library", "Application Support", desktopAppIdentifier, "data", "logs"),
+		)
+	}
+
+	roots := make([]string, 0, len(candidates))
+	seen := make(map[string]struct{}, len(candidates))
+	for _, candidate := range candidates {
+		if strings.TrimSpace(candidate) == "" {
+			continue
+		}
+		root, err := filepath.Abs(candidate)
+		if err != nil {
+			return nil, err
+		}
+		if _, ok := seen[root]; ok {
+			continue
+		}
+		seen[root] = struct{}{}
+		roots = append(roots, root)
+	}
+	return roots, nil
+}
+
+func pathWithinAnyRoot(roots []string, target string) bool {
+	for _, root := range roots {
+		rel, err := filepath.Rel(root, target)
+		if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(os.PathSeparator)) && !filepath.IsAbs(rel) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) probeAgent(w http.ResponseWriter, r *http.Request) {
@@ -874,6 +1464,12 @@ func respondStatus(w http.ResponseWriter, r *http.Request, status int, v any, er
 	switch {
 	case errors.Is(err, domain.ErrNotFound):
 		writeError(w, r, http.StatusNotFound, "resource_not_found", "Resource not found", nil)
+	case errors.Is(err, domain.ErrForbidden):
+		writeError(w, r, http.StatusForbidden, "resource_forbidden", "Resource is not accessible in this project", nil)
+	case errors.Is(err, domain.ErrInvalidDiffRange):
+		writeError(w, r, http.StatusBadRequest, "invalid_diff_range", "Diff line range must be complete and contained in the selected hunk", nil)
+	case errors.Is(err, domain.ErrInvalidFeedbackLink):
+		writeError(w, r, http.StatusBadRequest, "invalid_feedback_relation", "Feedback associations must form one consistent requirement, plan, task, checkpoint, file, and diff chain", nil)
 	case errors.Is(err, domain.ErrVersionConflict):
 		writeError(w, r, http.StatusConflict, "resource_version_conflict", "Resource version does not match", nil)
 	case errors.Is(err, domain.ErrInvalidTransition):

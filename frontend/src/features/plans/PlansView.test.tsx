@@ -12,13 +12,33 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Plan, PlanTask, Project } from "../../api/types";
 
-const { getPlan, runPlan, runTask } = vi.hoisted(() => ({
+const {
+  getPlan,
+  getTask,
+  runPlan,
+  runTask,
+  createFeedback,
+  checkpointDiff,
+  getFeedback,
+} = vi.hoisted(() => ({
   getPlan: vi.fn(),
+  getTask: vi.fn(),
   runPlan: vi.fn(),
   runTask: vi.fn(),
+  createFeedback: vi.fn(),
+  checkpointDiff: vi.fn(),
+  getFeedback: vi.fn(),
 }));
 vi.mock("../../api/client", () => ({
-  api: { plan: getPlan, runPlan, runTask },
+  api: {
+    plan: getPlan,
+    task: getTask,
+    runPlan,
+    runTask,
+    createFeedback,
+    checkpointDiff,
+    feedback: getFeedback,
+  },
 }));
 
 import { PlansView } from "./PlansView";
@@ -90,11 +110,58 @@ describe("PlansView detail structure and actions", () => {
 
   beforeEach(() => {
     getPlan.mockReset();
+    getTask.mockReset();
     runPlan.mockReset();
     runTask.mockReset();
-    getPlan.mockResolvedValue({ plan, tasks: [task] });
+    createFeedback.mockReset();
+    checkpointDiff.mockReset();
+    getFeedback.mockReset();
+    getFeedback.mockResolvedValue({
+      feedback: {
+        id: "feedback-created",
+        title: "新反馈",
+        body: "反馈说明",
+        status: "open",
+        createdAt: "2026-07-15T00:00:00Z",
+        updatedAt: "2026-07-15T00:00:00Z",
+      },
+      requirement: {
+        id: plan.intakeId,
+        title: "父需求",
+        body: "需求说明",
+        status: "planned",
+        createdAt: "2026-07-14T00:00:00Z",
+        updatedAt: "2026-07-15T00:00:00Z",
+      },
+      association: {
+        requirementId: plan.intakeId,
+        planId: plan.id,
+        taskId: task.id,
+      },
+      plan: {
+        id: plan.id,
+        title: plan.title,
+        status: plan.status,
+        markdown: plan.markdown,
+      },
+      task: {
+        id: task.id,
+        taskKey: task.taskKey,
+        title: task.title,
+        status: task.status,
+        acceptance: "[]",
+        acceptanceStatus: "pending",
+        acceptanceResult: "{}",
+      },
+      revision: { currentStatus: "not_started", items: [] },
+    });
+    getPlan.mockResolvedValue({ plan, tasks: [task], feedback: [] });
+    getTask.mockResolvedValue({ task, feedback: [] });
     runPlan.mockResolvedValue({});
     runTask.mockResolvedValue({});
+    createFeedback.mockResolvedValue({
+      feedback: { ...task, id: "feedback-created", kind: "feedback" },
+    });
   });
 
   it("keeps the title, plan actions, and progress fixed above the scrollable plan content", async () => {
@@ -166,9 +233,7 @@ describe("PlansView detail structure and actions", () => {
       within(planActions).getByRole("button", { name: "运行计划" }),
     );
 
-    await waitFor(() =>
-      expect(runPlan).toHaveBeenCalledWith(plan, "claude"),
-    );
+    await waitFor(() => expect(runPlan).toHaveBeenCalledWith(plan, "claude"));
     await waitFor(() =>
       expect(
         within(planActions).getByRole("button", { name: "运行计划" }),
@@ -183,10 +248,182 @@ describe("PlansView detail structure and actions", () => {
         name: "P001 本次执行提供方：Codex CLI",
       }),
     );
-    fireEvent.click(
-      within(taskCard).getByRole("button", { name: "运行任务" }),
-    );
+    fireEvent.click(within(taskCard).getByRole("button", { name: "运行任务" }));
 
     await waitFor(() => expect(runTask).toHaveBeenCalledWith(task, "codex"));
+  });
+
+  it("prefills the requirement, plan, and task when feedback starts from a task card", async () => {
+    renderPlans();
+
+    const taskCard = (await screen.findByText("P001 · 实现固定结构")).closest(
+      "article",
+    ) as HTMLElement;
+    fireEvent.click(within(taskCard).getByRole("button", { name: "创建反馈" }));
+
+    const dialog = screen.getByRole("dialog", { name: "创建关联反馈" });
+    expect(within(dialog).getByText("提交前检查关联对象")).toBeInTheDocument();
+    expect(within(dialog).getByText(plan.title)).toBeInTheDocument();
+    expect(within(dialog).getByText("P001 · 实现固定结构")).toBeInTheDocument();
+
+    fireEvent.change(within(dialog).getByLabelText("反馈标题"), {
+      target: { value: "任务反馈" },
+    });
+    fireEvent.change(within(dialog).getByLabelText("反馈说明"), {
+      target: { value: "请调整任务实现" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "创建反馈" }));
+
+    await waitFor(() =>
+      expect(createFeedback).toHaveBeenCalledWith(project.id, {
+        requirementId: plan.intakeId,
+        planId: plan.id,
+        taskId: task.id,
+        title: "任务反馈",
+        body: "请调整任务实现",
+      }),
+    );
+  });
+
+  it("selects a bounded Diff line range and creates precise feedback", async () => {
+    const checkpointId = "55555555-5555-4555-8555-555555555555";
+    const checkpointTask = {
+      ...task,
+      status: "succeeded",
+      checkpointId,
+    } as PlanTask & { checkpointId: string };
+    const fileId = "66666666-6666-4666-8666-666666666666";
+    const hunkId = "77777777-7777-4777-8777-777777777777";
+    getPlan.mockResolvedValue({ plan, tasks: [checkpointTask], feedback: [] });
+    getTask.mockResolvedValue({ task: checkpointTask, feedback: [] });
+    checkpointDiff.mockResolvedValue({
+      checkpoint: {
+        id: checkpointId,
+        projectId: project.id,
+        planId: plan.id,
+        intakeId: plan.intakeId,
+        taskId: task.id,
+        sequence: 3,
+        kind: "task_checkpoint",
+        changeSummary: {},
+        additions: 2,
+        deletions: 1,
+        createdAt: "2026-07-15T00:00:00Z",
+        files: [
+          {
+            id: fileId,
+            snapshotId: checkpointId,
+            sequence: 1,
+            path: "frontend/src/App.tsx",
+            status: "modified",
+            staged: false,
+            binary: false,
+            additions: 2,
+            deletions: 1,
+            createdAt: "2026-07-15T00:00:00Z",
+            hunks: [
+              {
+                id: hunkId,
+                fileId,
+                sequence: 1,
+                header: "@@ -10,2 +10,3 @@",
+                patch: "@@ -10,2 +10,3 @@\n same\n-old\n+new\n+extra",
+                oldStartLine: 10,
+                oldLineCount: 2,
+                newStartLine: 10,
+                newLineCount: 3,
+                createdAt: "2026-07-15T00:00:00Z",
+              },
+            ],
+          },
+        ],
+      },
+      feedback: [],
+    });
+    renderPlans();
+
+    const taskCard = (await screen.findByText("P001 · 实现固定结构")).closest(
+      "article",
+    ) as HTMLElement;
+    fireEvent.click(
+      within(taskCard).getByRole("button", { name: "查看变更与 Diff" }),
+    );
+    await screen.findByRole("table", { name: "frontend/src/App.tsx Diff" });
+    fireEvent.click(screen.getByRole("button", { name: "选择新行 11" }));
+    fireEvent.click(screen.getByRole("button", { name: "选择新行 12" }));
+    fireEvent.click(
+      screen.getByRole("button", { name: "为所选行创建精确反馈" }),
+    );
+
+    const dialog = screen.getByRole("dialog", { name: "创建关联反馈" });
+    expect(
+      within(dialog).getByText("精确范围：新文件第 11–12 行"),
+    ).toBeInTheDocument();
+    fireEvent.change(within(dialog).getByLabelText("反馈标题"), {
+      target: { value: "精确 Diff 反馈" },
+    });
+    fireEvent.change(within(dialog).getByLabelText("反馈说明"), {
+      target: { value: "这两行需要调整" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "创建反馈" }));
+
+    await waitFor(() =>
+      expect(createFeedback).toHaveBeenCalledWith(project.id, {
+        requirementId: plan.intakeId,
+        planId: plan.id,
+        taskId: task.id,
+        checkpointId,
+        fileId,
+        diffHunkId: hunkId,
+        diffLineSide: "new",
+        diffLineStart: 11,
+        diffLineEnd: 12,
+        title: "精确 Diff 反馈",
+        body: "这两行需要调整",
+      }),
+    );
+  });
+
+  it("shows reverse feedback and revision status on plan and task views", async () => {
+    const reference = {
+      id: "feedback-1",
+      requirementId: plan.intakeId,
+      title: "需要修订交互",
+      feedbackStatus: "open",
+      revisionStatus: "ready",
+      createdAt: "2026-07-15T00:00:00Z",
+    };
+    getPlan.mockResolvedValue({ plan, tasks: [task], feedback: [reference] });
+    getTask.mockResolvedValue({ task, feedback: [reference] });
+    renderPlans();
+
+    await screen.findByText("计划关联反馈（1）");
+    expect(screen.getAllByText("需要修订交互").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("修订计划就绪").length).toBeGreaterThan(0);
+    expect(screen.getByText("关联反馈 1")).toBeInTheDocument();
+  });
+
+  it("renders a clear invalid checkpoint message and disables broken Diff actions", async () => {
+    const checkpointTask = {
+      ...task,
+      checkpointId: "missing-checkpoint",
+    } as PlanTask & { checkpointId: string };
+    getPlan.mockResolvedValue({ plan, tasks: [checkpointTask], feedback: [] });
+    getTask.mockResolvedValue({ task: checkpointTask, feedback: [] });
+    checkpointDiff.mockRejectedValue({ status: 404, message: "not found" });
+    renderPlans();
+
+    const taskCard = (await screen.findByText("P001 · 实现固定结构")).closest(
+      "article",
+    ) as HTMLElement;
+    fireEvent.click(
+      within(taskCard).getByRole("button", { name: "查看变更与 Diff" }),
+    );
+
+    expect(await screen.findByText("关联对象已不存在")).toBeInTheDocument();
+    expect(screen.getByText(/损坏链接和修订操作已禁用/)).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "为所选行创建精确反馈" }),
+    ).not.toBeInTheDocument();
   });
 });

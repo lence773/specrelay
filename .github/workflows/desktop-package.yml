@@ -10,8 +10,44 @@ permissions:
   contents: read
 
 jobs:
+  validate:
+    name: Validate release metadata
+    runs-on: ubuntu-24.04
+    outputs:
+      publish_release: ${{ steps.metadata.outputs.publish_release }}
+      release_tag: ${{ steps.metadata.outputs.release_tag }}
+      version: ${{ steps.metadata.outputs.version }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate SemVer tag and desktop versions
+        id: metadata
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+
+          release_tag=''
+          publish_release=false
+          if [[ "$EVENT_NAME" == 'push' && "$REF_TYPE" == 'tag' ]]; then
+            release_tag="$REF_NAME"
+            publish_release=true
+          fi
+
+          version="$(./scripts/package-desktop.sh --check-version-only "$release_tag")"
+          {
+            echo "publish_release=$publish_release"
+            echo "release_tag=$release_tag"
+            echo "version=$version"
+          } >> "$GITHUB_OUTPUT"
+
   linux:
     name: Linux x64 (.deb, .AppImage, .rpm)
+    needs: validate
     runs-on: ubuntu-24.04
     steps:
       - name: Checkout
@@ -53,24 +89,35 @@ jobs:
             sudo apt-get install --yes libfuse2
           fi
 
-      - name: Build Linux desktop bundles
+      - name: Build and verify Linux desktop bundles
         env:
+          SPECRELAY_RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
+          SPECRELAY_OFFICIAL_RELEASE: ${{ needs.validate.outputs.publish_release }}
           TAURI_BUNDLES: deb,appimage,rpm
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_UPDATER_PUBLIC_KEY }}
         run: ./scripts/package-desktop.sh
 
-      - name: Upload Linux desktop bundles
+      - name: Upload Linux desktop bundles and traceability metadata
         uses: actions/upload-artifact@v4
         with:
-          name: specrelay-linux-x64-${{ github.sha }}
+          name: specrelay-${{ needs.validate.outputs.version }}-linux-x64-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             desktop/src-tauri/target/release/bundle/deb/*.deb
+            desktop/src-tauri/target/release/bundle/deb/*.deb.sig
             desktop/src-tauri/target/release/bundle/appimage/*.AppImage
+            desktop/src-tauri/target/release/bundle/appimage/*.AppImage.sig
             desktop/src-tauri/target/release/bundle/rpm/*.rpm
+            desktop/src-tauri/target/release/bundle/rpm/*.rpm.sig
+            desktop/src-tauri/target/release/bundle/build-metadata-*.json
+            desktop/src-tauri/target/release/bundle/UNOFFICIAL-BUILD.txt
           if-no-files-found: error
           retention-days: 30
 
   windows:
     name: Windows x64 (NSIS, MSI)
+    needs: validate
     runs-on: windows-2022
     steps:
       - name: Checkout
@@ -94,24 +141,84 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Build Windows desktop bundles
+      - name: Import trusted Windows code-signing certificate
+        id: windows-certificate
+        shell: pwsh
+        env:
+          OFFICIAL_RELEASE: ${{ needs.validate.outputs.publish_release }}
+          WINDOWS_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $hasCertificate = -not [string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_BASE64)
+          $hasPassword = -not [string]::IsNullOrWhiteSpace($env:WINDOWS_CERTIFICATE_PASSWORD)
+          if ($env:OFFICIAL_RELEASE -eq 'true' -or $hasCertificate -or $hasPassword) {
+            if (-not $hasCertificate -or -not $hasPassword) {
+              throw 'Official Windows releases require WINDOWS_CERTIFICATE_BASE64 and WINDOWS_CERTIFICATE_PASSWORD.'
+            }
+            $pfxPath = Join-Path $env:RUNNER_TEMP 'specrelay-codesign.pfx'
+            try {
+              [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:WINDOWS_CERTIFICATE_BASE64))
+              $password = ConvertTo-SecureString $env:WINDOWS_CERTIFICATE_PASSWORD -AsPlainText -Force
+              $certificates = Import-PfxCertificate `
+                -FilePath $pfxPath `
+                -CertStoreLocation Cert:\CurrentUser\My `
+                -Password $password `
+                -Exportable:$false
+              $certificate = $certificates | Where-Object HasPrivateKey | Select-Object -First 1
+              if ($null -eq $certificate) {
+                throw 'The imported Windows code-signing certificate has no private key.'
+              }
+              $now = [DateTime]::UtcNow
+              if ($certificate.NotBefore.ToUniversalTime() -gt $now -or $certificate.NotAfter.ToUniversalTime() -le $now) {
+                throw "The Windows code-signing certificate is not currently valid: $($certificate.NotBefore) - $($certificate.NotAfter)."
+              }
+              "thumbprint=$($certificate.Thumbprint)" >> $env:GITHUB_OUTPUT
+            } finally {
+              Remove-Item -LiteralPath $pfxPath -Force -ErrorAction SilentlyContinue
+            }
+          } else {
+            'thumbprint=' >> $env:GITHUB_OUTPUT
+            Write-Warning 'No Windows certificate supplied: this manual build will be explicitly marked unofficial and unsigned.'
+          }
+
+      - name: Build and verify Windows desktop bundles
         shell: bash
         env:
+          SPECRELAY_RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
+          SPECRELAY_OFFICIAL_RELEASE: ${{ needs.validate.outputs.publish_release }}
           TAURI_BUNDLES: nsis,msi
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_UPDATER_PUBLIC_KEY }}
+          WINDOWS_CERTIFICATE_THUMBPRINT: ${{ steps.windows-certificate.outputs.thumbprint }}
+          WINDOWS_TIMESTAMP_URL: http://timestamp.digicert.com
         run: ./scripts/package-desktop.sh
 
-      - name: Upload Windows desktop bundles
+      - name: Upload Windows desktop bundles and traceability metadata
         uses: actions/upload-artifact@v4
         with:
-          name: specrelay-windows-x64-${{ github.sha }}
+          name: specrelay-${{ needs.validate.outputs.version }}-windows-x64-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
             desktop/src-tauri/target/release/bundle/nsis/*.exe
+            desktop/src-tauri/target/release/bundle/nsis/*.exe.sig
             desktop/src-tauri/target/release/bundle/msi/*.msi
+            desktop/src-tauri/target/release/bundle/msi/*.msi.sig
+            desktop/src-tauri/target/release/bundle/build-metadata-*.json
+            desktop/src-tauri/target/release/bundle/UNOFFICIAL-BUILD.txt
           if-no-files-found: error
           retention-days: 30
 
+      - name: Remove temporary Windows signing certificate
+        if: always() && steps.windows-certificate.outputs.thumbprint != ''
+        shell: pwsh
+        env:
+          CERTIFICATE_THUMBPRINT: ${{ steps.windows-certificate.outputs.thumbprint }}
+        run: Remove-Item -LiteralPath "Cert:\CurrentUser\My\$env:CERTIFICATE_THUMBPRINT" -Force -ErrorAction SilentlyContinue
+
   macos-intel:
     name: macOS Intel (.dmg)
+    needs: validate
     runs-on: macos-15-intel
     steps:
       - name: Checkout
@@ -135,21 +242,83 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Build macOS Intel desktop bundle
+      - name: Import Developer ID certificate into a temporary keychain
+        id: apple-keychain
+        shell: bash
         env:
+          OFFICIAL_RELEASE: ${{ needs.validate.outputs.publish_release }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
+        run: |
+          set -euo pipefail
+          if [[ "$OFFICIAL_RELEASE" == 'true' || -n "$APPLE_CERTIFICATE$APPLE_CERTIFICATE_PASSWORD$APPLE_SIGNING_IDENTITY" ]]; then
+            for variable in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY; do
+              if [[ -z "${!variable:-}" ]]; then
+                echo "Developer ID credential is empty: $variable" >&2
+                exit 1
+              fi
+            done
+            certificate_path="$RUNNER_TEMP/specrelay-developer-id.p12"
+            keychain_path="$RUNNER_TEMP/specrelay-signing.keychain-db"
+            keychain_password="$(openssl rand -base64 32)"
+            printf '%s' "$APPLE_CERTIFICATE" | base64 -D > "$certificate_path"
+            security create-keychain -p "$keychain_password" "$keychain_path"
+            security set-keychain-settings -lut 21600 "$keychain_path"
+            security unlock-keychain -p "$keychain_password" "$keychain_path"
+            security import "$certificate_path"               -k "$keychain_path"               -P "$APPLE_CERTIFICATE_PASSWORD"               -T /usr/bin/codesign               -T /usr/bin/security
+            security set-key-partition-list               -S apple-tool:,apple:,codesign:               -s               -k "$keychain_password"               "$keychain_path"
+            existing_keychains=()
+            while IFS= read -r existing_keychain; do
+              existing_keychain="${existing_keychain#"}"
+              existing_keychain="${existing_keychain%"}"
+              [[ -n "$existing_keychain" ]] && existing_keychains+=("$existing_keychain")
+            done < <(security list-keychains -d user | sed 's/^[[:space:]]*//')
+            security list-keychains -d user -s "$keychain_path" "${existing_keychains[@]}"
+            rm -f "$certificate_path"
+            echo "path=$keychain_path" >> "$GITHUB_OUTPUT"
+          else
+            echo 'path=' >> "$GITHUB_OUTPUT"
+            echo 'No Developer ID certificate supplied: this manual build will be explicitly marked unofficial and unsigned.' >&2
+          fi
+
+      - name: Build, notarize, staple, and verify macOS Intel bundle
+        env:
+          SPECRELAY_RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
+          SPECRELAY_OFFICIAL_RELEASE: ${{ needs.validate.outputs.publish_release }}
           TAURI_BUNDLES: dmg
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_UPDATER_PUBLIC_KEY }}
+          APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
         run: ./scripts/package-desktop.sh
 
-      - name: Upload macOS Intel desktop bundle
+      - name: Upload macOS Intel desktop bundle and traceability metadata
         uses: actions/upload-artifact@v4
         with:
-          name: specrelay-macos-intel-${{ github.sha }}
-          path: desktop/src-tauri/target/release/bundle/dmg/*.dmg
+          name: specrelay-${{ needs.validate.outputs.version }}-macos-x64-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            desktop/src-tauri/target/release/bundle/dmg/*.dmg
+            desktop/src-tauri/target/release/bundle/macos/*.app.tar.gz
+            desktop/src-tauri/target/release/bundle/macos/*.app.tar.gz.sig
+            desktop/src-tauri/target/release/bundle/build-metadata-*.json
+            desktop/src-tauri/target/release/bundle/UNOFFICIAL-BUILD.txt
           if-no-files-found: error
           retention-days: 30
 
+      - name: Remove temporary Developer ID keychain
+        if: always() && steps.apple-keychain.outputs.path != ''
+        shell: bash
+        env:
+          KEYCHAIN_PATH: ${{ steps.apple-keychain.outputs.path }}
+        run: security delete-keychain "$KEYCHAIN_PATH" || true
+
   macos-apple-silicon:
     name: macOS Apple Silicon (.dmg)
+    needs: validate
     runs-on: macos-14
     steps:
       - name: Checkout
@@ -173,45 +342,458 @@ jobs:
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
 
-      - name: Build macOS Apple Silicon desktop bundle
+      - name: Import Developer ID certificate into a temporary keychain
+        id: apple-keychain
+        shell: bash
         env:
+          OFFICIAL_RELEASE: ${{ needs.validate.outputs.publish_release }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
+        run: |
+          set -euo pipefail
+          if [[ "$OFFICIAL_RELEASE" == 'true' || -n "$APPLE_CERTIFICATE$APPLE_CERTIFICATE_PASSWORD$APPLE_SIGNING_IDENTITY" ]]; then
+            for variable in APPLE_CERTIFICATE APPLE_CERTIFICATE_PASSWORD APPLE_SIGNING_IDENTITY; do
+              if [[ -z "${!variable:-}" ]]; then
+                echo "Developer ID credential is empty: $variable" >&2
+                exit 1
+              fi
+            done
+            certificate_path="$RUNNER_TEMP/specrelay-developer-id.p12"
+            keychain_path="$RUNNER_TEMP/specrelay-signing.keychain-db"
+            keychain_password="$(openssl rand -base64 32)"
+            printf '%s' "$APPLE_CERTIFICATE" | base64 -D > "$certificate_path"
+            security create-keychain -p "$keychain_password" "$keychain_path"
+            security set-keychain-settings -lut 21600 "$keychain_path"
+            security unlock-keychain -p "$keychain_password" "$keychain_path"
+            security import "$certificate_path"               -k "$keychain_path"               -P "$APPLE_CERTIFICATE_PASSWORD"               -T /usr/bin/codesign               -T /usr/bin/security
+            security set-key-partition-list               -S apple-tool:,apple:,codesign:               -s               -k "$keychain_password"               "$keychain_path"
+            existing_keychains=()
+            while IFS= read -r existing_keychain; do
+              existing_keychain="${existing_keychain#"}"
+              existing_keychain="${existing_keychain%"}"
+              [[ -n "$existing_keychain" ]] && existing_keychains+=("$existing_keychain")
+            done < <(security list-keychains -d user | sed 's/^[[:space:]]*//')
+            security list-keychains -d user -s "$keychain_path" "${existing_keychains[@]}"
+            rm -f "$certificate_path"
+            echo "path=$keychain_path" >> "$GITHUB_OUTPUT"
+          else
+            echo 'path=' >> "$GITHUB_OUTPUT"
+            echo 'No Developer ID certificate supplied: this manual build will be explicitly marked unofficial and unsigned.' >&2
+          fi
+
+      - name: Build, notarize, staple, and verify macOS Apple Silicon bundle
+        env:
+          SPECRELAY_RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
+          SPECRELAY_OFFICIAL_RELEASE: ${{ needs.validate.outputs.publish_release }}
           TAURI_BUNDLES: dmg
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_UPDATER_PUBLIC_KEY }}
+          APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
         run: ./scripts/package-desktop.sh
 
-      - name: Upload macOS Apple Silicon desktop bundle
+      - name: Upload macOS Apple Silicon desktop bundle and traceability metadata
         uses: actions/upload-artifact@v4
         with:
-          name: specrelay-macos-apple-silicon-${{ github.sha }}
-          path: desktop/src-tauri/target/release/bundle/dmg/*.dmg
+          name: specrelay-${{ needs.validate.outputs.version }}-macos-arm64-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            desktop/src-tauri/target/release/bundle/dmg/*.dmg
+            desktop/src-tauri/target/release/bundle/macos/*.app.tar.gz
+            desktop/src-tauri/target/release/bundle/macos/*.app.tar.gz.sig
+            desktop/src-tauri/target/release/bundle/build-metadata-*.json
+            desktop/src-tauri/target/release/bundle/UNOFFICIAL-BUILD.txt
           if-no-files-found: error
           retention-days: 30
 
+      - name: Remove temporary Developer ID keychain
+        if: always() && steps.apple-keychain.outputs.path != ''
+        shell: bash
+        env:
+          KEYCHAIN_PATH: ${{ steps.apple-keychain.outputs.path }}
+        run: security delete-keychain "$KEYCHAIN_PATH" || true
+
   release:
-    name: Publish version release
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [linux, windows, macos-intel, macos-apple-silicon]
+    name: Publish signed version release
+    if: needs.validate.outputs.publish_release == 'true'
+    needs: [validate, linux, windows, macos-intel, macos-apple-silicon]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+    env:
+      RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
+      VERSION: ${{ needs.validate.outputs.version }}
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+      TAURI_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_UPDATER_PUBLIC_KEY }}
     steps:
-      - name: Download desktop bundles
+      - name: Checkout release tag
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Node.js for signed release manifest
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      - name: Install updater signature verifier
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes minisign
+
+      - name: Verify release tag and signing key configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag_sha="$(git rev-list -n 1 "$RELEASE_TAG")"
+          if [[ "$tag_sha" != "$GITHUB_SHA" ]]; then
+            printf 'Release tag %s moved from %s to %s during this workflow.\n' \
+              "$RELEASE_TAG" "$GITHUB_SHA" "$tag_sha" >&2
+            exit 1
+          fi
+          for variable in TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD TAURI_UPDATER_PUBLIC_KEY; do
+            if [[ -z "${!variable:-}" ]]; then
+              echo "Official release credential is empty: $variable" >&2
+              exit 1
+            fi
+          done
+
+      - name: Download this run's desktop bundles
         uses: actions/download-artifact@v4
         with:
-          path: release-assets
+          pattern: specrelay-${{ needs.validate.outputs.version }}-*-${{ github.run_id }}-${{ github.run_attempt }}
+          path: downloaded-assets
 
-      - name: Create or update GitHub Release
+      - name: Prepare immutable assets, updater index, manifest, and checksums
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPOSITORY: ${{ github.repository }}
+          SERVER_URL: ${{ github.server_url }}
+        run: |
+          set -euo pipefail
+          output_dir='release-assets'
+          mkdir -p "$output_dir"
+
+          collect_one() {
+            local artifact_dir="$1"
+            local pattern="$2"
+            local output_name="$3"
+            local -a matches=()
+            mapfile -d '' matches < <(find "$artifact_dir" -type f -name "$pattern" -print0)
+            if [[ "${#matches[@]}" -ne 1 ]]; then
+              printf 'Expected exactly one %s in %s, found %d.\n' \
+                "$pattern" "$artifact_dir" "${#matches[@]}" >&2
+              exit 1
+            fi
+            cp "${matches[0]}" "$output_dir/$output_name"
+          }
+
+          find_one() {
+            local artifact_dir="$1"
+            local pattern="$2"
+            local -a matches=()
+            mapfile -d '' matches < <(find "$artifact_dir" -type f -name "$pattern" -print0)
+            if [[ "${#matches[@]}" -ne 1 ]]; then
+              printf 'Expected exactly one %s in %s, found %d.\n' \
+                "$pattern" "$artifact_dir" "${#matches[@]}" >&2
+              exit 1
+            fi
+            printf '%s\n' "${matches[0]}"
+          }
+
+          linux_dir="downloaded-assets/specrelay-$VERSION-linux-x64-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          windows_dir="downloaded-assets/specrelay-$VERSION-windows-x64-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          macos_x64_dir="downloaded-assets/specrelay-$VERSION-macos-x64-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          macos_arm64_dir="downloaded-assets/specrelay-$VERSION-macos-arm64-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          for artifact_dir in "$linux_dir" "$windows_dir" "$macos_x64_dir" "$macos_arm64_dir"; do
+            if [[ ! -d "$artifact_dir" ]]; then
+              echo "Required artifact was not downloaded: $artifact_dir" >&2
+              exit 1
+            fi
+            if find "$artifact_dir" -type f -name 'UNOFFICIAL-BUILD.txt' | grep -q .; then
+              echo "Official release input contains an unofficial-build marker: $artifact_dir" >&2
+              exit 1
+            fi
+          done
+
+          collect_one "$linux_dir" '*.deb' "SpecRelay-$VERSION-linux-x64-deb.deb"
+          collect_one "$linux_dir" '*.deb.sig' "SpecRelay-$VERSION-linux-x64-deb.deb.sig"
+          collect_one "$linux_dir" '*.AppImage' "SpecRelay-$VERSION-linux-x64-appimage.AppImage"
+          collect_one "$linux_dir" '*.AppImage.sig' "SpecRelay-$VERSION-linux-x64-appimage.AppImage.sig"
+          collect_one "$linux_dir" '*.rpm' "SpecRelay-$VERSION-linux-x64-rpm.rpm"
+          collect_one "$linux_dir" '*.rpm.sig' "SpecRelay-$VERSION-linux-x64-rpm.rpm.sig"
+
+          collect_one "$windows_dir" '*.exe' "SpecRelay-$VERSION-windows-x64-nsis.exe"
+          collect_one "$windows_dir" '*.exe.sig' "SpecRelay-$VERSION-windows-x64-nsis.exe.sig"
+          collect_one "$windows_dir" '*.msi' "SpecRelay-$VERSION-windows-x64-msi.msi"
+          collect_one "$windows_dir" '*.msi.sig' "SpecRelay-$VERSION-windows-x64-msi.msi.sig"
+
+          collect_one "$macos_x64_dir" '*.dmg' "SpecRelay-$VERSION-macos-x64-dmg.dmg"
+          collect_one "$macos_x64_dir" '*.app.tar.gz' "SpecRelay-$VERSION-macos-x64-updater.app.tar.gz"
+          collect_one "$macos_x64_dir" '*.app.tar.gz.sig' "SpecRelay-$VERSION-macos-x64-updater.app.tar.gz.sig"
+
+          collect_one "$macos_arm64_dir" '*.dmg' "SpecRelay-$VERSION-macos-arm64-dmg.dmg"
+          collect_one "$macos_arm64_dir" '*.app.tar.gz' "SpecRelay-$VERSION-macos-arm64-updater.app.tar.gz"
+          collect_one "$macos_arm64_dir" '*.app.tar.gz.sig' "SpecRelay-$VERSION-macos-arm64-updater.app.tar.gz.sig"
+
+          updater_public_key="$RUNNER_TEMP/tauri-updater.pub"
+          printf '%s' "$TAURI_UPDATER_PUBLIC_KEY" | base64 --decode > "$updater_public_key"
+          if ! grep -q '^untrusted comment: minisign public key:' "$updater_public_key"; then
+            echo 'TAURI_UPDATER_PUBLIC_KEY is not a valid Tauri/minisign public key.' >&2
+            exit 1
+          fi
+          verify_tauri_signature() {
+            local payload="$1"
+            local encoded_signature="$2"
+            local decoded_signature="$RUNNER_TEMP/$(basename "$encoded_signature").minisig"
+            base64 --decode "$encoded_signature" > "$decoded_signature"
+            minisign -Vm "$payload" -x "$decoded_signature" -p "$updater_public_key"
+            rm -f "$decoded_signature"
+          }
+          verify_tauri_signature "$output_dir/SpecRelay-$VERSION-linux-x64-deb.deb"             "$output_dir/SpecRelay-$VERSION-linux-x64-deb.deb.sig"
+          verify_tauri_signature "$output_dir/SpecRelay-$VERSION-linux-x64-appimage.AppImage"             "$output_dir/SpecRelay-$VERSION-linux-x64-appimage.AppImage.sig"
+          verify_tauri_signature "$output_dir/SpecRelay-$VERSION-linux-x64-rpm.rpm"             "$output_dir/SpecRelay-$VERSION-linux-x64-rpm.rpm.sig"
+          verify_tauri_signature "$output_dir/SpecRelay-$VERSION-windows-x64-nsis.exe"             "$output_dir/SpecRelay-$VERSION-windows-x64-nsis.exe.sig"
+          verify_tauri_signature "$output_dir/SpecRelay-$VERSION-windows-x64-msi.msi"             "$output_dir/SpecRelay-$VERSION-windows-x64-msi.msi.sig"
+          verify_tauri_signature "$output_dir/SpecRelay-$VERSION-macos-x64-updater.app.tar.gz"             "$output_dir/SpecRelay-$VERSION-macos-x64-updater.app.tar.gz.sig"
+          verify_tauri_signature "$output_dir/SpecRelay-$VERSION-macos-arm64-updater.app.tar.gz"             "$output_dir/SpecRelay-$VERSION-macos-arm64-updater.app.tar.gz.sig"
+
+          linux_metadata="$(find_one "$linux_dir" 'build-metadata-*.json')"
+          windows_metadata="$(find_one "$windows_dir" 'build-metadata-*.json')"
+          macos_x64_metadata="$(find_one "$macos_x64_dir" 'build-metadata-*.json')"
+          macos_arm64_metadata="$(find_one "$macos_arm64_dir" 'build-metadata-*.json')"
+          for metadata in "$linux_metadata" "$windows_metadata" "$macos_x64_metadata" "$macos_arm64_metadata"; do
+            jq -e --arg tag "$RELEASE_TAG" --arg sha "$GITHUB_SHA" '
+              .official_release == true and
+              .tag == $tag and
+              .commit_sha == $sha and
+              .updater_signing.status == "signed"
+            ' "$metadata" >/dev/null
+          done
+          jq -e '.code_signing.status == "not-available"' "$linux_metadata" >/dev/null
+          jq -e '.code_signing.status == "verified-authenticode"' "$windows_metadata" >/dev/null
+          jq -e '.code_signing.status == "verified-developer-id-notarized-stapled"' "$macos_x64_metadata" >/dev/null
+          jq -e '.code_signing.status == "verified-developer-id-notarized-stapled"' "$macos_arm64_metadata" >/dev/null
+
+          jq -s \
+            --arg tag "$RELEASE_TAG" \
+            --arg version "$VERSION" \
+            --arg sha "$GITHUB_SHA" \
+            --arg repository "$REPOSITORY" \
+            --arg run_id "$GITHUB_RUN_ID" \
+            --arg run_url "$SERVER_URL/$REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --arg generated_at "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+            '{
+              schema_version: 1,
+              tag: $tag,
+              version: $version,
+              commit_sha: $sha,
+              repository: $repository,
+              github_actions: { run_id: $run_id, run_url: $run_url },
+              generated_at: $generated_at,
+              builders: .
+            }' \
+            "$linux_metadata" "$windows_metadata" "$macos_x64_metadata" "$macos_arm64_metadata" \
+            > "$output_dir/build-metadata.json"
+
+          if ! gh api --method POST "repos/$REPOSITORY/releases/generate-notes" \
+            -f tag_name="$RELEASE_TAG" \
+            --jq '.body' > release-notes.md; then
+            printf 'SpecRelay %s. See the commit history for this immutable tag.\n' "$VERSION" > release-notes.md
+          fi
+          if [[ ! -s release-notes.md ]]; then
+            printf 'SpecRelay %s.\n' "$VERSION" > release-notes.md
+          fi
+
+          asset_url="$SERVER_URL/$REPOSITORY/releases/download/$RELEASE_TAG"
+          signature_value() {
+            tr -d '\r\n' < "$1"
+          }
+          jq -n \
+            --arg version "$VERSION" \
+            --rawfile notes release-notes.md \
+            --arg pub_date "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+            --arg linux_url "$asset_url/SpecRelay-$VERSION-linux-x64-appimage.AppImage" \
+            --arg linux_sig "$(signature_value "$output_dir/SpecRelay-$VERSION-linux-x64-appimage.AppImage.sig")" \
+            --arg windows_url "$asset_url/SpecRelay-$VERSION-windows-x64-nsis.exe" \
+            --arg windows_sig "$(signature_value "$output_dir/SpecRelay-$VERSION-windows-x64-nsis.exe.sig")" \
+            --arg macos_x64_url "$asset_url/SpecRelay-$VERSION-macos-x64-updater.app.tar.gz" \
+            --arg macos_x64_sig "$(signature_value "$output_dir/SpecRelay-$VERSION-macos-x64-updater.app.tar.gz.sig")" \
+            --arg macos_arm64_url "$asset_url/SpecRelay-$VERSION-macos-arm64-updater.app.tar.gz" \
+            --arg macos_arm64_sig "$(signature_value "$output_dir/SpecRelay-$VERSION-macos-arm64-updater.app.tar.gz.sig")" \
+            '{
+              version: $version,
+              notes: $notes,
+              pub_date: $pub_date,
+              platforms: {
+                "linux-x86_64": { url: $linux_url, signature: $linux_sig },
+                "windows-x86_64": { url: $windows_url, signature: $windows_sig },
+                "darwin-x86_64": { url: $macos_x64_url, signature: $macos_x64_sig },
+                "darwin-aarch64": { url: $macos_arm64_url, signature: $macos_arm64_sig }
+              }
+            }' > "$output_dir/latest.json"
+          jq -e '
+            .version != "" and .notes != "" and .pub_date != "" and
+            (.platforms | length) == 4 and
+            all(.platforms[]; (.url | contains("/releases/download/")) and .signature != "")
+          ' "$output_dir/latest.json" >/dev/null
+
+          manifest_rows="$RUNNER_TEMP/specrelay-release-manifest.jsonl"
+          : > "$manifest_rows"
+          record_artifact() {
+            local filename="$1"
+            local platform="$2"
+            local architecture="$3"
+            local install_format="$4"
+            local code_signing="$5"
+            local update_signing="$6"
+            local path="$output_dir/$filename"
+            if [[ ! -s "$path" ]]; then
+              echo "Release payload is missing or empty: $path" >&2
+              exit 1
+            fi
+            jq -cn \
+              --arg filename "$filename" \
+              --argjson size "$(stat -c '%s' "$path")" \
+              --arg sha256 "$(sha256sum "$path" | awk '{print $1}')" \
+              --arg platform "$platform" \
+              --arg architecture "$architecture" \
+              --arg install_format "$install_format" \
+              --arg code_signing "$code_signing" \
+              --arg update_signing "$update_signing" \
+              '{
+                filename: $filename,
+                size: $size,
+                sha256: $sha256,
+                platform: $platform,
+                architecture: $architecture,
+                install_format: $install_format,
+                code_signing_status: $code_signing,
+                update_signing_status: $update_signing
+              }' >> "$manifest_rows"
+          }
+
+          record_artifact "SpecRelay-$VERSION-linux-x64-deb.deb" linux x64 deb \
+            platform-code-signing-unavailable signed
+          record_artifact "SpecRelay-$VERSION-linux-x64-appimage.AppImage" linux x64 appimage \
+            platform-code-signing-unavailable signed
+          record_artifact "SpecRelay-$VERSION-linux-x64-rpm.rpm" linux x64 rpm \
+            platform-code-signing-unavailable signed
+          record_artifact "SpecRelay-$VERSION-windows-x64-nsis.exe" windows x64 nsis \
+            verified-authenticode signed
+          record_artifact "SpecRelay-$VERSION-windows-x64-msi.msi" windows x64 msi \
+            verified-authenticode signed
+          record_artifact "SpecRelay-$VERSION-macos-x64-dmg.dmg" macos x64 dmg \
+            verified-developer-id-notarized-stapled not-applicable
+          record_artifact "SpecRelay-$VERSION-macos-x64-updater.app.tar.gz" macos x64 app-tar-gz \
+            verified-developer-id-notarized-stapled signed
+          record_artifact "SpecRelay-$VERSION-macos-arm64-dmg.dmg" macos arm64 dmg \
+            verified-developer-id-notarized-stapled not-applicable
+          record_artifact "SpecRelay-$VERSION-macos-arm64-updater.app.tar.gz" macos arm64 app-tar-gz \
+            verified-developer-id-notarized-stapled signed
+
+          jq -s \
+            --arg tag "$RELEASE_TAG" \
+            --arg version "$VERSION" \
+            --arg sha "$GITHUB_SHA" \
+            --arg repository "$REPOSITORY" \
+            --arg run_id "$GITHUB_RUN_ID" \
+            --arg run_url "$SERVER_URL/$REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+            --arg generated_at "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+            '{
+              schema_version: 1,
+              tag: $tag,
+              version: $version,
+              commit_sha: $sha,
+              repository: $repository,
+              github_actions: { run_id: $run_id, run_url: $run_url },
+              generated_at: $generated_at,
+              signature_scheme: "Tauri updater/minisign detached signature",
+              artifacts: .
+            }' "$manifest_rows" > "$output_dir/release-manifest.json"
+
+          npm --prefix desktop ci
+          npm --prefix desktop exec tauri signer sign -- "$output_dir/release-manifest.json"
+          if [[ ! -s "$output_dir/release-manifest.json.sig" ]]; then
+            echo 'The signed release manifest signature was not generated.' >&2
+            exit 1
+          fi
+          verify_tauri_signature "$output_dir/release-manifest.json"             "$output_dir/release-manifest.json.sig"
+
+          (
+            cd "$output_dir"
+            LC_ALL=C find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\0' |
+              sort -z |
+              xargs -0 sha256sum > SHA256SUMS
+            sha256sum --check SHA256SUMS
+          )
+
+          mapfile -d '' assets < <(find "$output_dir" -maxdepth 1 -type f -print0)
+          if [[ "${#assets[@]}" -ne 21 ]]; then
+            printf 'Expected exactly 21 release assets, found %d.\n' "${#assets[@]}" >&2
+            exit 1
+          fi
+          printf 'Release assets for %s:\n' "$RELEASE_TAG"
+          printf '  %s\n' "${assets[@]}"
+
+      - name: Create draft release with verified notes
+        id: create-release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          mapfile -d '' files < <(find release-assets -type f -print0)
-          if [[ "${#files[@]}" -eq 0 ]]; then
-            echo 'No desktop bundles were downloaded.' >&2
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $RELEASE_TAG already exists; refusing to mix assets from different runs." >&2
             exit 1
           fi
-          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" "${files[@]}" --clobber --repo "$GITHUB_REPOSITORY"
-          else
-            gh release create "$GITHUB_REF_NAME" --generate-notes "${files[@]}" --repo "$GITHUB_REPOSITORY"
+
+          prerelease_args=()
+          if [[ "$VERSION" == *-* ]]; then
+            prerelease_args+=(--prerelease)
           fi
+          gh release create "$RELEASE_TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            --verify-tag \
+            --draft \
+            --notes-file release-notes.md \
+            --title "SpecRelay $VERSION" \
+            "${prerelease_args[@]}"
+          echo 'created=true' >> "$GITHUB_OUTPUT"
+
+      - name: Verify uploaded assets and publish release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mapfile -d '' assets < <(find release-assets -maxdepth 1 -type f -print0)
+          gh release upload "$RELEASE_TAG" "${assets[@]}" --repo "$GITHUB_REPOSITORY"
+
+          mapfile -t expected < <(find release-assets -maxdepth 1 -type f -printf '%f\n' | sort)
+          mapfile -t uploaded < <(
+            gh api "repos/$GITHUB_REPOSITORY/releases/tags/$RELEASE_TAG" \
+              --jq '.assets[].name' | sort
+          )
+          if [[ "${expected[*]}" != "${uploaded[*]}" ]]; then
+            printf 'Uploaded release assets do not match the verified asset set.\n' >&2
+            printf 'Expected:\n  %s\n' "${expected[@]}" >&2
+            printf 'Uploaded:\n  %s\n' "${uploaded[@]}" >&2
+            exit 1
+          fi
+          gh release edit "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --draft=false
+
+      - name: Remove incomplete draft after failure
+        if: failure() && steps.create-release.outputs.created == 'true'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release delete "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" --yes || true

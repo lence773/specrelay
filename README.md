@@ -33,7 +33,47 @@ Run the **Desktop package** workflow manually in GitHub Actions to create downlo
 | macOS Intel | macOS Intel | `.dmg` |
 | macOS Apple Silicon | macOS Apple Silicon | `.dmg` |
 
-The installers are not code-signed by this workflow. Before public distribution, configure the appropriate Apple and Windows code-signing/notarization credentials; otherwise macOS Gatekeeper or Windows SmartScreen may require an explicit user confirmation.
+### Release signing, notarization, and traceability
+
+A tag build is an **official release** and is fail-closed:
+
+- Windows NSIS and MSI installers are Authenticode-signed with the trusted certificate imported from `WINDOWS_CERTIFICATE_BASE64`, timestamped with SHA-256, and checked with `Get-AuthenticodeSignature`. A missing/expired certificate, missing password, or non-`Valid` result stops the release.
+- The macOS `.app` and final `.dmg` use a Developer ID Application identity. The workflow submits them to Apple notarization, staples the tickets, and checks `codesign`, `spctl`, and `xcrun stapler validate` before upload. Missing Apple credentials or any failed assessment stops the release.
+- Every updater-capable payload is independently signed with the Tauri updater key (`TAURI_SIGNING_PRIVATE_KEY`) and verified with the matching public key before publication. The packaged desktop receives only `TAURI_UPDATER_PUBLIC_KEY`; the private key, its password, PFX/P12 contents, certificate passwords, Apple ID app-specific password, and notarization credentials remain GitHub Actions secrets and are never written to the repository, release assets, or installer.
+
+Configure these GitHub Actions **secrets**: `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, `WINDOWS_CERTIFICATE_BASE64`, `WINDOWS_CERTIFICATE_PASSWORD`, `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_ID`, and `APPLE_PASSWORD`. Configure the non-secret repository **variables** `TAURI_UPDATER_PUBLIC_KEY`, `APPLE_SIGNING_IDENTITY`, and `APPLE_TEAM_ID`. Use an encrypted, dedicated Tauri updater private key that is separate from the Windows and Apple code-signing identities.
+
+Each official Release also contains:
+
+- `latest.json`, with the target version, publication time, release notes, detached updater signature, and immutable tag-scoped URLs for Windows x64, macOS Intel, macOS Apple Silicon, and Linux x64 AppImage payloads;
+- `SHA256SUMS` for byte-for-byte manual verification;
+- `release-manifest.json` plus `release-manifest.json.sig`, where each payload records its filename, byte size, SHA-256, platform, architecture, install format, code-signing status, and updater-signing status;
+- `build-metadata.json`, containing the tag, full commit SHA, repository, GitHub Actions run ID/URL, UTC build time, per-runner target, and Go/Node/npm/Rust/Cargo/Tauri toolchain versions.
+
+### Linux trust and manual verification
+
+Linux distributions do not share one OS-vendor Developer ID/Authenticode-style trust and notarization service, and this project does not control every distribution's package-signing repository. Linux artifacts are therefore explicitly recorded as `platform-code-signing-unavailable`, not represented as platform-code-signed. The Tauri updater signature prevents the application from installing a modified automatic-update payload, while SHA-256 lets a user manually confirm that any downloaded `.deb`, `.rpm`, or `.AppImage` is byte-for-byte identical to the release artifact.
+
+After downloading an official Release into one directory:
+
+```bash
+# Linux
+sha256sum --check SHA256SUMS
+
+# macOS
+shasum -a 256 -c SHA256SUMS
+xcrun stapler validate SpecRelay-*-macos-*-dmg.dmg
+spctl --assess --type open --context context:primary-signature -vv SpecRelay-*-macos-*-dmg.dmg
+```
+
+On Windows, compare a payload with its line in `SHA256SUMS`, then verify Authenticode:
+
+```powershell
+Get-FileHash .\SpecRelay-*-windows-x64-nsis.exe -Algorithm SHA256
+Get-AuthenticodeSignature .\SpecRelay-*-windows-x64-nsis.exe | Format-List Status, StatusMessage, SignerCertificate
+```
+
+A local or manually dispatched build may run without credentials. In that case updater artifacts are disabled, platform installers are unsigned, the output directory contains `UNOFFICIAL-BUILD.txt`, and `build-metadata-*.json` records `official_release: false` plus the exact signing states. Such files must not be redistributed as official releases.
 
 ### Build and install
 

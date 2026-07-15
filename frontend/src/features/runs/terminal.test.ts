@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { parseTerminalLines } from './terminal'
+import { buildUsageTrend, parseTerminalLines, runSessionBadges } from './terminal'
 
 const codex=(event:unknown)=>JSON.stringify(event)
 
@@ -42,5 +42,38 @@ describe('parseTerminalLines',()=>{
     expect(parseTerminalLines('\u001b[32mchecking\u001b[0m\ncompleted','validation')).toEqual([
       {kind:'system',marker:'›',text:'已接收 2 条终端输出；为保持运行记录简洁，未展示具体内容。'},
     ])
+  })
+})
+
+describe('run observability helpers',()=>{
+  it('labels session reuse, snapshot restore, and invalidation reasons explicitly',()=>{
+    expect(runSessionBadges({sessionMode:'new'})).toEqual([
+      {key:'session-new',label:'新会话',tone:'new'},
+    ])
+    expect(runSessionBadges({sessionMode:'reused',sessionInvalidationReason:'provider_switched'})).toEqual([
+      {key:'session-reused',label:'复用会话',tone:'reused'},
+      {key:'invalidation-provider_switched',label:'会话失效：Provider 已切换',tone:'warning'},
+    ])
+    expect(runSessionBadges({sessionMode:'snapshot_restored'})).toEqual([
+      {key:'session-snapshot_restored',label:'快照恢复',tone:'restored'},
+    ])
+  })
+
+  it('keeps unavailable usage absent and separates cost currencies in trends',()=>{
+    const trend=buildUsageTrend([
+      {id:'1',provider:'codex',status:'succeeded',startedAt:'2026-07-14T01:00:00Z'},
+      {id:'2',provider:'codex',status:'succeeded',startedAt:'2026-07-14T02:00:00Z',totalTokens:120,costAmount:'0.25',costCurrency:'USD'},
+      {id:'3',provider:'claude',status:'succeeded',startedAt:'2026-07-14T03:00:00Z',totalTokens:80,costAmount:'1.50',costCurrency:'CNY'},
+      {id:'4',provider:'validation',status:'succeeded',startedAt:'2026-07-15T01:00:00Z'},
+    ])
+    expect(trend[0]).toEqual({
+      bucket:'2026-07-14',runCount:3,tokenCoverageCount:2,totalTokens:200,
+      costs:[
+        {currency:'CNY',amount:1.5,coverageCount:1},
+        {currency:'USD',amount:.25,coverageCount:1},
+      ],
+    })
+    expect(trend[1]).toEqual({bucket:'2026-07-15',runCount:1,tokenCoverageCount:0,costs:[]})
+    expect('totalTokens' in trend[1]).toBe(false)
   })
 })

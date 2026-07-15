@@ -245,3 +245,64 @@ func TestSessionHelpersPreserveRecentExecutionState(t *testing.T) {
 		t.Fatal("unexpected unavailable-session classification")
 	}
 }
+
+func TestValidateDiscussionInputRequiresFeedbackForRevisionCreation(t *testing.T) {
+	err := validateDiscussionInput(RequirementDiscussionRequest{
+		CreateRevision: true,
+		Messages:       []RequirementDiscussionMessage{{Role: "user", Content: "确认创建修订"}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "feedbackId") {
+		t.Fatalf("err=%v", err)
+	}
+}
+
+func TestFeedbackDiscussionPromptKeepsReadOnlyIndependentRevisionRules(t *testing.T) {
+	feedbackID := uuid.New()
+	prompt := requirementDiscussionPrompt("项目", "说明", RequirementDiscussionRequest{
+		Title: "修订标题", Body: "修订草稿", FeedbackID: &feedbackID,
+	}, []byte(`[{"role":"user","content":"请修订"}]`), &domain.FeedbackTrace{
+		Feedback:    domain.Intake{ID: feedbackID, Title: "原反馈", Body: "原反馈正文"},
+		Requirement: domain.Intake{ID: uuid.New(), Title: "原需求", Body: "原需求正文"},
+	})
+	for _, want := range []string{"只能读取和分析", "独立的增量修订", "不要修改原反馈", "原反馈正文", "修订草稿"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+}
+
+func TestChooseFeedbackSessionPrefersMatchingExecutionAndRejectsUnsafeIDs(t *testing.T) {
+	projectID := uuid.New()
+	planID := uuid.New()
+	requirementID := uuid.New()
+	execution := domain.AgentSession{
+		ID: uuid.New(), ProjectID: projectID, PlanID: &planID, Provider: agent.ProviderCodex,
+		Purpose: "execution", Status: "active", CLISessionID: "execution-session",
+	}
+	requirement := domain.AgentSession{
+		ID: uuid.New(), ProjectID: projectID, IntakeID: &requirementID, Provider: agent.ProviderCodex,
+		Purpose: "requirement", Status: "active", CLISessionID: "requirement-session",
+	}
+	selection := chooseFeedbackSession(projectID, agent.ProviderCodex, &planID, requirementID, &execution, &requirement)
+	if selection.Session == nil || selection.Session.ID != execution.ID {
+		t.Fatalf("selection=%+v", selection)
+	}
+
+	crossProject := execution
+	crossProject.ProjectID = uuid.New()
+	wrongProvider := requirement
+	wrongProvider.Provider = agent.ProviderClaude
+	wrongProvider.ContextSummary = "bounded requirement snapshot"
+	selection = chooseFeedbackSession(projectID, agent.ProviderCodex, &planID, requirementID, &crossProject, &wrongProvider)
+	if selection.Session != nil || selection.Snapshot != "bounded requirement snapshot" || selection.InvalidationReason != domain.AgentRunSessionInvalidationProviderSwitched {
+		t.Fatalf("unsafe selection=%+v", selection)
+	}
+
+	stale := requirement
+	stale.Status = "stale"
+	stale.ContextSummary = "stale snapshot"
+	selection = chooseFeedbackSession(projectID, agent.ProviderCodex, &planID, requirementID, nil, &stale)
+	if selection.Session != nil || selection.Snapshot != "stale snapshot" {
+		t.Fatalf("stale selection=%+v", selection)
+	}
+}

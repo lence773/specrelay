@@ -8,6 +8,8 @@
 )]
 
 use std::{
+    env,
+    ffi::OsString,
     fs,
     io::{Read, Write},
     net::{TcpListener, TcpStream},
@@ -212,6 +214,11 @@ fn start_backend(
         .env("SHUTDOWN_TOKEN", &shutdown_token)
         .env("INSTANCE_ID", &instance_id)
         .env("WORKER_CONCURRENCY", "2")
+        // GUI launchers generally do not load the user's shell startup files.
+        // Preserve the inherited PATH and add conventional local CLI locations
+        // (notably nvm) so the backend can execute the Codex/Claude command
+        // selected in project settings.
+        .env("PATH", local_cli_search_path())
         .spawn()
         .map_err(|error| format!("无法启动宿主机后端：{error}"))?;
 
@@ -245,6 +252,60 @@ fn start_backend(
             json_string(&launch_url)
         ))
         .map_err(|error| format!("无法打开本地应用页面：{error}"))
+}
+
+/// Builds a PATH suitable for a desktop-launched backend.
+///
+/// A desktop app commonly starts without `.bashrc`/`.zshrc`, so tools installed
+/// by npm, nvm, Volta, Cargo, or asdf are otherwise invisible to the sidecar.
+/// The configured command remains authoritative; this only makes the normal
+/// user-level installation directories discoverable.
+fn local_cli_search_path() -> OsString {
+    let inherited = env::var_os("PATH").unwrap_or_default();
+    let mut paths = Vec::new();
+
+    if let Some(home) = env::var_os("HOME").map(PathBuf::from) {
+        add_path_if_directory(&mut paths, home.join(".local/bin"));
+        add_path_if_directory(&mut paths, home.join(".npm-global/bin"));
+        add_path_if_directory(&mut paths, home.join(".volta/bin"));
+        add_path_if_directory(&mut paths, home.join(".cargo/bin"));
+        add_path_if_directory(&mut paths, home.join(".asdf/shims"));
+
+        let nvm_versions = home.join(".nvm/versions/node");
+        if let Ok(entries) = fs::read_dir(nvm_versions) {
+            let mut versions = entries
+                .flatten()
+                .map(|entry| entry.path())
+                .collect::<Vec<_>>();
+            versions.sort();
+            for version in versions.into_iter().rev() {
+                add_path_if_directory(&mut paths, version.join("bin"));
+            }
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(app_data) = env::var_os("APPDATA").map(PathBuf::from) {
+            add_path_if_directory(&mut paths, app_data.join("npm"));
+        }
+        if let Some(local_app_data) = env::var_os("LOCALAPPDATA").map(PathBuf::from) {
+            add_path_if_directory(&mut paths, local_app_data.join("Volta/bin"));
+        }
+    }
+
+    for path in env::split_paths(&inherited) {
+        if !paths.iter().any(|candidate| candidate == &path) {
+            paths.push(path);
+        }
+    }
+    env::join_paths(paths).unwrap_or(inherited)
+}
+
+fn add_path_if_directory(paths: &mut Vec<PathBuf>, path: PathBuf) {
+    if path.is_dir() && !paths.iter().any(|candidate| candidate == &path) {
+        paths.push(path);
+    }
 }
 
 fn set_backend(

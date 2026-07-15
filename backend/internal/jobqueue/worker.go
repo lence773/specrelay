@@ -2,6 +2,7 @@ package jobqueue
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -127,8 +128,8 @@ func (p *Pool) recover(ctx context.Context) {
 			if p.isDraining() {
 				return
 			}
-			if err := p.Store.RecoverJobs(ctx); err != nil && ctx.Err() == nil {
-				p.Logger.Warn("recover interrupted jobs failed", "error", err)
+			if err := p.Store.ReconcileRuntimeState(ctx, p.InstanceID); err != nil && ctx.Err() == nil {
+				p.Logger.Warn("runtime reconciliation failed; will retry", "error", err)
 			}
 		}
 	}
@@ -188,19 +189,36 @@ func (p *Pool) run(parent context.Context, workerID string, job domain.Job) {
 	}
 	heartbeatDone := make(chan struct{})
 	go func() {
-		ticker := time.NewTicker(p.Heartbeat)
+		interval := p.Heartbeat
+		if interval <= 0 {
+			interval = 10 * time.Second
+		}
+		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		defer close(heartbeatDone)
+		leaseDeadline := time.Now().Add(p.LeaseDuration)
+		if job.LeaseExpiresAt != nil && !job.LeaseExpiresAt.IsZero() {
+			leaseDeadline = *job.LeaseExpiresAt
+		}
 		for {
 			select {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if err := renewLease(ctx, job.ID, workerID, p.LeaseDuration); err != nil {
-					p.Logger.Error(leaseName+" lease lost; cancelling agent", "job", job.ID, "error", err)
-					cancel()
-					return
+				err := renewLease(ctx, job.ID, workerID, p.LeaseDuration)
+				if err == nil {
+					leaseDeadline = time.Now().Add(p.LeaseDuration)
+					continue
 				}
+				if !errors.Is(err, repository.ErrLeaseLost) && time.Now().Before(leaseDeadline) {
+					// A transient database fault is not proof that ownership was
+					// lost. Retry while the last durably confirmed lease is valid.
+					p.Logger.Warn(leaseName+" lease heartbeat failed; retrying", "job", job.ID, "error", err)
+					continue
+				}
+				p.Logger.Error(leaseName+" lease lost; cancelling agent", "job", job.ID, "error", err)
+				cancel()
+				return
 			}
 		}
 	}()
@@ -210,6 +228,17 @@ func (p *Pool) run(parent context.Context, workerID string, job domain.Job) {
 	if err == nil {
 		if completeErr := p.Store.CompleteJob(parent, job.ID, workerID); completeErr != nil && !errors.Is(completeErr, domain.ErrNotFound) {
 			p.Logger.Error("complete job failed", "job", job.ID, "error", completeErr)
+		}
+		return
+	}
+	if blocked, ok := app.DriftBlock(err); ok {
+		report, marshalErr := json.Marshal(blocked.Report)
+		if marshalErr != nil {
+			p.Logger.Error("marshal drift report failed", "job", job.ID, "error", marshalErr)
+		} else if blockErr := p.Store.BlockTaskJobForDrift(parent, job, workerID, report); blockErr != nil && !errors.Is(blockErr, domain.ErrNotFound) {
+			p.Logger.Error("block drifted task job failed", "job", job.ID, "error", blockErr)
+		} else if blockErr == nil {
+			p.Logger.Warn("job blocked by execution context drift", "job", job.ID, "severity", blocked.Report.Severity, "fingerprint", blocked.Report.Fingerprint)
 		}
 		return
 	}

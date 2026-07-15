@@ -15,6 +15,8 @@ tags:
   - {name: Intakes}
   - {name: Plans}
   - {name: Tasks}
+  - {name: Feedback}
+  - {name: Checkpoints}
   - {name: Events}
   - {name: Settings}
 paths:
@@ -94,6 +96,30 @@ paths:
       operationId: discussRequirement
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/RequirementDiscussionRequest'}}}}
       responses: {'200': {description: Requirement discussion response, content: {application/json: {schema: {$ref: '#/components/schemas/RequirementDiscussionResult'}}}}, default: {$ref: '#/components/responses/Error'}}
+  /projects/{projectId}/feedback:
+    parameters: [{$ref: '#/components/parameters/ProjectId'}]
+    post:
+      tags: [Feedback]
+      operationId: createFeedback
+      description: Creates feedback only after the parent requirement and every optional plan/task/checkpoint/file/diff association have been validated as one chain in this project. Validation and writes use one transaction.
+      requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/FeedbackCreateInput'}}}}
+      responses:
+        '201': {description: Feedback created, content: {application/json: {schema: {$ref: '#/components/schemas/FeedbackCreateResponse'}}}}
+        '400': {description: Error code is invalid_feedback_relation for a broken hierarchy or invalid_diff_range for an incomplete/out-of-hunk line range, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '403': {description: Error code resource_forbidden; no referenced content from another project is returned, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '404': {description: Error code resource_not_found; a referenced resource does not exist, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        default: {$ref: '#/components/responses/Error'}
+  /projects/{projectId}/feedback/{feedbackId}:
+    parameters: [{$ref: '#/components/parameters/ProjectId'}, {$ref: '#/components/parameters/FeedbackId'}]
+    get:
+      tags: [Feedback]
+      operationId: getFeedbackContext
+      description: Read-only, size-bounded context for review. It includes the original requirement, optional execution location, selected Diff fragment, task acceptance state, and subsequent revision state without returning unrestricted source text.
+      responses:
+        '200': {description: Bounded feedback context, content: {application/json: {schema: {$ref: '#/components/schemas/FeedbackContext'}}}}
+        '403': {description: Error code resource_forbidden; feedback is not accessible in this project, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '404': {$ref: '#/components/responses/Error'}
+        default: {$ref: '#/components/responses/Error'}
   /intakes/{intakeId}:
     parameters: [{$ref: '#/components/parameters/IntakeId'}]
     get:
@@ -130,7 +156,7 @@ paths:
     get:
       tags: [Plans]
       operationId: getPlan
-      responses: {'200': {description: Plan detail, content: {application/json: {schema: {type: object, required: [plan, tasks], properties: {plan: {$ref: '#/components/schemas/Plan'}, tasks: {type: array, items: {$ref: '#/components/schemas/PlanTask'}}}}}}}, default: {$ref: '#/components/responses/Error'}}
+      responses: {'200': {description: Plan detail with reverse feedback references, content: {application/json: {schema: {type: object, required: [plan, tasks, feedback], properties: {plan: {$ref: '#/components/schemas/Plan'}, tasks: {type: array, items: {$ref: '#/components/schemas/PlanTask'}}, feedback: {type: array, items: {$ref: '#/components/schemas/FeedbackReference'}}}}}}}, default: {$ref: '#/components/responses/Error'}}
     delete:
       tags: [Plans]
       operationId: deletePlan
@@ -156,6 +182,18 @@ paths:
       operationId: stopPlan
       requestBody: {required: true, content: {application/json: {schema: {$ref: '#/components/schemas/VersionInput'}}}}
       responses: {'202': {description: Stop requested, content: {application/json: {schema: {type: object, required: [plan, jobIds], properties: {plan: {$ref: '#/components/schemas/Plan'}, jobIds: {type: array, items: {type: string, format: uuid}}}}}}}, '409': {$ref: '#/components/responses/VersionConflict'}, default: {$ref: '#/components/responses/Error'}}
+  /tasks/{taskId}:
+    parameters: [{$ref: '#/components/parameters/TaskId'}]
+    get:
+      tags: [Tasks]
+      operationId: getTask
+      responses: {'200': {description: Task detail with reverse feedback references and current revision status, content: {application/json: {schema: {type: object, required: [task, feedback], properties: {task: {$ref: '#/components/schemas/PlanTask'}, feedback: {type: array, items: {$ref: '#/components/schemas/FeedbackReference'}}}}}}}, default: {$ref: '#/components/responses/Error'}}
+  /checkpoints/{checkpointId}:
+    parameters: [{$ref: '#/components/parameters/CheckpointId'}]
+    get:
+      tags: [Checkpoints]
+      operationId: getCheckpoint
+      responses: {'200': {description: Immutable checkpoint detail with reverse feedback references and current revision status, content: {application/json: {schema: {type: object, required: [checkpoint, feedback], properties: {checkpoint: {$ref: '#/components/schemas/PlanExecutionSnapshot'}, feedback: {type: array, items: {$ref: '#/components/schemas/FeedbackReference'}}}}}}}, default: {$ref: '#/components/responses/Error'}}
   /tasks/{taskId}/{action}:
     parameters: [{$ref: '#/components/parameters/TaskId'}, {name: action, in: path, required: true, schema: {type: string, enum: [run, retry]}}]
     post:
@@ -177,6 +215,47 @@ paths:
       operationId: listAgentRuns
       parameters: [{name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 100}}]
       responses: {'200': {description: Agent runs, content: {application/json: {schema: {type: array, items: {$ref: '#/components/schemas/AgentRun'}}}}}, default: {$ref: '#/components/responses/Error'}}
+  /projects/{projectId}/observability:
+    parameters: [{$ref: '#/components/parameters/ProjectId'}]
+    get:
+      tags: [AgentRuns]
+      operationId: queryProjectObservability
+      description: Query structured local Agent Run observability. The service reads only the local database and calculates logical-operation success rates without counting snapshot fallback calls as separate business executions.
+      parameters:
+        - {name: from, in: query, required: false, schema: {type: string, format: date-time}, description: Inclusive Agent Run start time}
+        - {name: to, in: query, required: false, schema: {type: string, format: date-time}, description: Inclusive Agent Run start time}
+        - {name: provider, in: query, required: false, schema: {$ref: '#/components/schemas/AgentRunProvider'}}
+        - {name: planId, in: query, required: false, schema: {type: string, format: uuid}, description: Plan owned by the current project}
+        - {name: page, in: query, required: false, schema: {type: integer, minimum: 1, default: 1}}
+        - {name: pageSize, in: query, required: false, schema: {type: integer, minimum: 1, maximum: 200, default: 50}}
+      responses:
+        '200': {description: Filtered runs, related business entities, and local aggregates, content: {application/json: {schema: {$ref: '#/components/schemas/AgentRunObservabilityResponse'}}}}
+        '400': {$ref: '#/components/responses/Error'}
+        default: {$ref: '#/components/responses/Error'}
+  /projects/{projectId}/observability/export:
+    parameters: [{$ref: '#/components/parameters/ProjectId'}]
+    get:
+      tags: [AgentRuns]
+      operationId: exportProjectObservability
+      description: Generate a redacted JSON or CSV download entirely in the local backend. Sensitive project metadata and business titles are excluded by default and can be enabled independently.
+      parameters:
+        - {name: from, in: query, required: false, schema: {type: string, format: date-time}}
+        - {name: to, in: query, required: false, schema: {type: string, format: date-time}}
+        - {name: provider, in: query, required: false, schema: {$ref: '#/components/schemas/AgentRunProvider'}}
+        - {name: planId, in: query, required: false, schema: {type: string, format: uuid}}
+        - {name: format, in: query, required: false, schema: {type: string, enum: [json, csv], default: json}}
+        - {name: includeProjectName, in: query, required: false, schema: {type: boolean, default: false}}
+        - {name: includeWorkspacePath, in: query, required: false, schema: {type: boolean, default: false}}
+        - {name: includeBusinessTitles, in: query, required: false, schema: {type: boolean, default: false}}
+      responses:
+        '200':
+          description: Local redacted summary download
+          headers: {Content-Disposition: {schema: {type: string}}}
+          content:
+            application/json: {schema: {$ref: '#/components/schemas/AgentRunObservabilityExport'}}
+            text/csv: {schema: {type: string}}
+        '400': {$ref: '#/components/responses/Error'}
+        default: {$ref: '#/components/responses/Error'}
   /agent-runs/{agentRunId}/log:
     parameters: [{name: agentRunId, in: path, required: true, schema: {type: string, format: uuid}}]
     get:
@@ -225,6 +304,8 @@ components:
     IntakeId: {name: intakeId, in: path, required: true, schema: {type: string, format: uuid}}
     PlanId: {name: planId, in: path, required: true, schema: {type: string, format: uuid}}
     TaskId: {name: taskId, in: path, required: true, schema: {type: string, format: uuid}}
+    FeedbackId: {name: feedbackId, in: path, required: true, schema: {type: string, format: uuid}}
+    CheckpointId: {name: checkpointId, in: path, required: true, schema: {type: string, format: uuid}}
   responses:
     Accepted: {description: Job queued, content: {application/json: {schema: {$ref: '#/components/schemas/AsyncResponse'}}}}
     Error: {description: Error response, content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
@@ -294,7 +375,15 @@ components:
           description: CLI session ID returned by the previous discussion round. It is used to continue the same provider conversation when available.
         sessionProvider:
           $ref: '#/components/schemas/CLIProvider'
-          description: Provider that created sessionId. A changed provider starts a new discussion session instead of attempting cross-provider resume.
+          description: Provider that created sessionId. A changed provider starts a new discussion session instead of attempting cross-provider resume. Feedback discussions should omit client session identifiers because the server selects a stored session only after matching the feedback project, association, and provider.
+        feedbackId:
+          type: string
+          format: uuid
+          description: Optional feedback context for an independent revision discussion. It must belong to projectId; clients must not reuse session identifiers from another project, feedback item, or provider.
+        createRevision:
+          type: boolean
+          default: false
+          description: When true, feedbackId is required. If this round is ready, the server creates an independent revision requirement and may queue its plan according to project automation settings.
         messages:
           type: array
           minItems: 1
@@ -311,6 +400,28 @@ components:
         body: {type: string}
         ready: {type: boolean}
         sessionId: {type: string}
+        revision: {$ref: '#/components/schemas/FeedbackRevisionDiscussionResult'}
+    FeedbackRevisionDiscussionResult:
+      type: object
+      required: [intake, revision]
+      additionalProperties: false
+      properties:
+        intake: {$ref: '#/components/schemas/Intake'}
+        job:
+          oneOf: [{$ref: '#/components/schemas/Job'}, {type: 'null'}]
+        revision: {$ref: '#/components/schemas/FeedbackRevision'}
+    FeedbackRevision:
+      type: object
+      required: [id, feedbackId, projectId, requirementId, revisionIntake, createdAt]
+      additionalProperties: false
+      properties:
+        id: {type: string, format: uuid}
+        feedbackId: {type: string, format: uuid}
+        projectId: {type: string, format: uuid}
+        requirementId: {type: string, format: uuid}
+        revisionIntake: {$ref: '#/components/schemas/Intake'}
+        revisionPlan: {$ref: '#/components/schemas/Plan'}
+        createdAt: {type: string, format: date-time}
     IntakeStatus: {type: string, enum: [open, planning, planned, closed, plan_failed]}
     IntakeInput:
       type: object
@@ -327,6 +438,14 @@ components:
         provider:
           $ref: '#/components/schemas/CLIProvider'
           description: Optional provider override only for plan generation automatically queued when this request creates a requirement or feedback with project automation enabled. When omitted, the queued job carries no override and uses ProjectSettings.agentProvider on the server. It does not change the project default.
+        planId: {type: [string, 'null'], format: uuid, description: Feedback only. The plan must belong to parentIntakeId in this project.}
+        taskId: {type: [string, 'null'], format: uuid, description: Feedback only. Requires planId and must belong to that plan.}
+        checkpointId: {type: [string, 'null'], format: uuid, description: Feedback only. Requires taskId and must be an immutable task checkpoint for that task.}
+        fileId: {type: [string, 'null'], format: uuid, description: Feedback only. Requires checkpointId and must identify a changed file in that checkpoint.}
+        diffHunkId: {type: [string, 'null'], format: uuid, description: Feedback only. Requires fileId and must identify a hunk in that file.}
+        diffLineSide: {type: string, enum: [old, new], description: Feedback only. When present, diffHunkId, diffLineStart, and diffLineEnd are all required.}
+        diffLineStart: {type: integer, minimum: 1, description: Inclusive source or destination line according to diffLineSide.}
+        diffLineEnd: {type: integer, minimum: 1, description: Inclusive source or destination line; must be within the selected hunk and not precede diffLineStart.}
         requirementSessionId:
           type: string
           description: Durable CLI session from the requirement discussion. Only valid when kind is requirement.
@@ -334,13 +453,268 @@ components:
           $ref: '#/components/schemas/CLIProvider'
           description: Provider that created requirementSessionId. Only valid when kind is requirement.
 
+    FeedbackCreateInput:
+      type: object
+      required: [requirementId, title, body]
+      additionalProperties: false
+      properties:
+        requirementId: {type: string, format: uuid, description: Direct parent requirement in the current project.}
+        title: {type: string, minLength: 1, maxLength: 256}
+        body: {type: string, maxLength: 12000}
+        provider:
+          $ref: '#/components/schemas/CLIProvider'
+          description: Optional provider override only for plan generation automatically queued for this feedback when project automation is enabled. When omitted, the client sends no provider and the server resolves the project's current setting without changing it.
+        planId: {type: [string, 'null'], format: uuid, description: Optional plan owned by requirementId.}
+        taskId: {type: [string, 'null'], format: uuid, description: Optional task; requires planId and must belong to it.}
+        checkpointId: {type: [string, 'null'], format: uuid, description: Optional immutable task checkpoint; requires taskId and must belong to it.}
+        fileId: {type: [string, 'null'], format: uuid, description: Optional changed file; requires checkpointId and must belong to it.}
+        diffHunkId: {type: [string, 'null'], format: uuid, description: Optional Diff hunk; requires fileId and must belong to it.}
+        diffLineSide: {type: string, enum: [old, new], description: Side used to interpret the inclusive Diff line range.}
+        diffLineStart: {type: integer, minimum: 1, description: Inclusive old/new line number within diffHunkId.}
+        diffLineEnd: {type: integer, minimum: 1, description: Inclusive old/new line number within diffHunkId; must be at least diffLineStart.}
+    FeedbackCreateResponse:
+      type: object
+      required: [feedback]
+      additionalProperties: false
+      properties:
+        feedback: {$ref: '#/components/schemas/Intake'}
+        job: {oneOf: [{$ref: '#/components/schemas/Job'}, {type: 'null'}]}
+    FeedbackIntakeSummary:
+      type: object
+      required: [id, title, body, status, createdAt, updatedAt]
+      additionalProperties: false
+      properties:
+        id: {type: string, format: uuid}
+        title: {type: string, maxLength: 256}
+        body: {type: string, maxLength: 12000}
+        status: {type: string, maxLength: 64}
+        createdAt: {type: string, format: date-time}
+        updatedAt: {type: string, format: date-time}
+    FeedbackAssociationSummary:
+      type: object
+      required: [requirementId]
+      additionalProperties: false
+      properties:
+        requirementId: {type: string, format: uuid}
+        planId: {type: string, format: uuid}
+        taskId: {type: string, format: uuid}
+        checkpointId: {type: string, format: uuid}
+        fileId: {type: string, format: uuid}
+        diffHunkId: {type: string, format: uuid}
+        diffLineSide: {type: string, enum: [old, new]}
+        diffLineStart: {type: integer, minimum: 1}
+        diffLineEnd: {type: integer, minimum: 1}
+    FeedbackPlanSummary:
+      type: object
+      required: [id, title, status, markdown]
+      additionalProperties: false
+      properties: {id: {type: string, format: uuid}, title: {type: string, maxLength: 256}, status: {type: string, maxLength: 64}, markdown: {type: string, maxLength: 12000}}
+    FeedbackTaskSummary:
+      type: object
+      required: [id, taskKey, title, status, acceptance, acceptanceStatus, acceptanceResult]
+      additionalProperties: false
+      properties:
+        id: {type: string, format: uuid}
+        taskKey: {type: string, maxLength: 128}
+        title: {type: string, maxLength: 256}
+        status: {type: string, maxLength: 64}
+        acceptance: {type: string, maxLength: 8000, description: Size-bounded JSON text containing the task acceptance definition or legacy acceptance list.}
+        acceptanceStatus: {type: string, maxLength: 64}
+        acceptanceResult: {type: string, maxLength: 8000, description: Size-bounded JSON text containing the latest acceptance result.}
+    FeedbackCheckpointSummary:
+      type: object
+      required: [id, sequence, kind, changeSummary, gitHead, createdAt]
+      additionalProperties: false
+      properties:
+        id: {type: string, format: uuid}
+        sequence: {type: integer, format: int64}
+        kind: {type: string, maxLength: 64}
+        changeSummary: {type: string, maxLength: 8000, description: Size-bounded JSON text.}
+        gitHead: {type: string, maxLength: 256}
+        createdAt: {type: string, format: date-time}
+    FeedbackFileSummary:
+      type: object
+      required: [id, path, status, staged, binary, additions, deletions]
+      additionalProperties: false
+      properties:
+        id: {type: string, format: uuid}
+        path: {type: string, maxLength: 1024}
+        previousPath: {type: string, maxLength: 1024}
+        status: {type: string, maxLength: 64}
+        staged: {type: boolean}
+        binary: {type: boolean}
+        additions: {type: integer, minimum: 0}
+        deletions: {type: integer, minimum: 0}
+    FeedbackDiffSummary:
+      type: object
+      required: [hunkId, header, snippet]
+      additionalProperties: false
+      properties:
+        hunkId: {type: string, format: uuid}
+        header: {type: string, maxLength: 1024}
+        side: {type: string, enum: [old, new]}
+        startLine: {type: integer, minimum: 1}
+        endLine: {type: integer, minimum: 1}
+        snippet: {type: string, maxLength: 12000, description: Only selected old/new lines when a range was supplied; otherwise the selected hunk, always truncated to this limit.}
+    FeedbackRevisionStatus: {type: string, enum: [not_started, requested, planning, ready, running, completed, failed, blocked, cancelled, unknown]}
+    FeedbackRevisionSummary:
+      type: object
+      required: [id, requirementId, requirementTitle, intakeStatus, currentStatus, createdAt]
+      additionalProperties: false
+      properties:
+        id: {type: string, format: uuid}
+        requirementId: {type: string, format: uuid}
+        requirementTitle: {type: string, maxLength: 256}
+        intakeStatus: {type: string, maxLength: 64}
+        planId: {type: string, format: uuid}
+        planStatus: {type: string, maxLength: 64}
+        currentStatus: {$ref: '#/components/schemas/FeedbackRevisionStatus'}
+        createdAt: {type: string, format: date-time}
+    FeedbackRevisionState:
+      type: object
+      required: [currentStatus, items]
+      additionalProperties: false
+      properties:
+        currentStatus: {$ref: '#/components/schemas/FeedbackRevisionStatus'}
+        items: {type: array, items: {$ref: '#/components/schemas/FeedbackRevisionSummary'}}
+    FeedbackContext:
+      type: object
+      required: [feedback, requirement, association, revision]
+      additionalProperties: false
+      properties:
+        feedback: {$ref: '#/components/schemas/FeedbackIntakeSummary'}
+        requirement: {$ref: '#/components/schemas/FeedbackIntakeSummary'}
+        association: {$ref: '#/components/schemas/FeedbackAssociationSummary'}
+        plan: {$ref: '#/components/schemas/FeedbackPlanSummary'}
+        task: {$ref: '#/components/schemas/FeedbackTaskSummary'}
+        checkpoint: {$ref: '#/components/schemas/FeedbackCheckpointSummary'}
+        file: {$ref: '#/components/schemas/FeedbackFileSummary'}
+        diff: {$ref: '#/components/schemas/FeedbackDiffSummary'}
+        revision: {$ref: '#/components/schemas/FeedbackRevisionState'}
+    FeedbackReference:
+      type: object
+      required: [id, requirementId, title, feedbackStatus, revisionStatus, createdAt]
+      additionalProperties: false
+      properties:
+        id: {type: string, format: uuid}
+        requirementId: {type: string, format: uuid}
+        title: {type: string, maxLength: 256}
+        feedbackStatus: {type: string, maxLength: 64}
+        revisionStatus: {$ref: '#/components/schemas/FeedbackRevisionStatus'}
+        createdAt: {type: string, format: date-time}
+    PlanExecutionSnapshot:
+      type: object
+      required: [id, projectId, planId, intakeId, sequence, kind, changeSummary, files, createdAt]
+      properties:
+        id: {type: string, format: uuid}
+        projectId: {type: string, format: uuid}
+        planId: {type: string, format: uuid}
+        intakeId: {type: string, format: uuid}
+        taskId: {type: string, format: uuid}
+        sequence: {type: integer, format: int64}
+        kind: {type: string}
+        changeSummary: {type: object}
+        additions: {type: integer, minimum: 0}
+        deletions: {type: integer, minimum: 0}
+        files: {type: array, items: {$ref: '#/components/schemas/PlanExecutionSnapshotFile'}}
+        createdAt: {type: string, format: date-time}
+    PlanExecutionSnapshotFile:
+      type: object
+      required: [id, snapshotId, sequence, path, status, staged, binary, additions, deletions, hunks, createdAt]
+      properties:
+        id: {type: string, format: uuid}
+        snapshotId: {type: string, format: uuid}
+        sequence: {type: integer}
+        path: {type: string}
+        previousPath: {type: string}
+        status: {type: string}
+        staged: {type: boolean}
+        binary: {type: boolean}
+        additions: {type: integer, minimum: 0}
+        deletions: {type: integer, minimum: 0}
+        hunks: {type: array, items: {$ref: '#/components/schemas/PlanExecutionSnapshotHunk'}}
+        createdAt: {type: string, format: date-time}
+    PlanExecutionSnapshotHunk:
+      type: object
+      required: [id, fileId, sequence, header, patch, oldStartLine, oldLineCount, newStartLine, newLineCount, createdAt]
+      properties:
+        id: {type: string, format: uuid}
+        fileId: {type: string, format: uuid}
+        sequence: {type: integer}
+        header: {type: string}
+        patch: {type: string}
+        oldStartLine: {type: integer, minimum: 0}
+        oldLineCount: {type: integer, minimum: 0}
+        newStartLine: {type: integer, minimum: 0}
+        newLineCount: {type: integer, minimum: 0}
+        createdAt: {type: string, format: date-time}
     Intake: {allOf: [{$ref: '#/components/schemas/ResourceBase'}, {type: object, required: [projectId, kind, title, body, status, configSnapshot], properties: {projectId: {type: string, format: uuid}, kind: {type: string, enum: [requirement, feedback]}, parentIntakeId: {type: [string, 'null'], format: uuid}, title: {type: string}, body: {type: string}, status: {$ref: '#/components/schemas/IntakeStatus'}, configSnapshot: {type: object}}}]}
     PlanSpec: {type: object, required: [title, summary, tasks, finalValidation], additionalProperties: false, properties: {title: {type: string}, summary: {type: string}, tasks: {type: array, items: {type: object, required: [title, scope, acceptance], properties: {title: {type: string}, scope: {type: array, items: {type: string}}, acceptance: {type: array, items: {type: string}}}}}, finalValidation: {type: array, items: {type: string}}}}
-    Plan: {allOf: [{$ref: '#/components/schemas/ResourceBase'}, {type: object, required: [projectId, intakeId, title, spec, markdown, status], properties: {projectId: {type: string, format: uuid}, intakeId: {type: string, format: uuid}, title: {type: string}, spec: {$ref: '#/components/schemas/PlanSpec'}, markdown: {type: string}, status: {type: string, enum: [generating, ready, running, validating, completed, blocked, cancelled]}}}]}
-    PlanTask: {allOf: [{$ref: '#/components/schemas/ResourceBase'}, {type: object, required: [projectId, planId, taskKey, position, title, scope, acceptance, status], properties: {projectId: {type: string, format: uuid}, planId: {type: string, format: uuid}, taskKey: {type: string, pattern: '^P[0-9]{3,}$'}, position: {type: integer}, title: {type: string}, scope: {type: array, items: {type: string}}, acceptance: {type: array, items: {type: string}}, status: {type: string, enum: [pending, queued, running, succeeded, failed, cancelled]}, sessionId: {type: string}, startedAt: {type: [string, 'null'], format: date-time}, finishedAt: {type: [string, 'null'], format: date-time}}}]}
+    Plan: {allOf: [{$ref: '#/components/schemas/ResourceBase'}, {type: object, required: [projectId, intakeId, title, spec, markdown, status], properties: {projectId: {type: string, format: uuid}, intakeId: {type: string, format: uuid}, title: {type: string}, spec: {$ref: '#/components/schemas/PlanSpec'}, markdown: {type: string}, status: {type: string, enum: [generating, ready, running, validating, blocked, cancelling, completed, failed, interrupted, cancelled]}}}]}
+    PlanTask: {allOf: [{$ref: '#/components/schemas/ResourceBase'}, {type: object, required: [projectId, planId, taskKey, position, title, scope, acceptance, status], properties: {projectId: {type: string, format: uuid}, planId: {type: string, format: uuid}, taskKey: {type: string, pattern: '^P[0-9]{3,}$'}, position: {type: integer}, title: {type: string}, scope: {type: array, items: {type: string}}, acceptance: {type: array, items: {type: string}}, acceptanceStatus: {type: string, enum: [pending, passed, failed]}, acceptanceResult: {type: object}, status: {type: string, enum: [pending, queued, running, cancelling, succeeded, failed, interrupted, cancelled]}, sessionId: {type: string}, startedAt: {type: [string, 'null'], format: date-time}, finishedAt: {type: [string, 'null'], format: date-time}}}]}
     Job: {allOf: [{$ref: '#/components/schemas/ResourceBase'}, {type: object, required: [projectId, type, aggregateType, aggregateId, priority, status, runAfter, attempt, maxAttempts, idempotencyKey], properties: {projectId: {type: string, format: uuid}, type: {type: string}, aggregateType: {type: string}, aggregateId: {type: string, format: uuid}, priority: {type: integer}, status: {type: string, enum: [queued, leased, running, retry_wait, succeeded, failed, cancelled]}, runAfter: {type: string, format: date-time}, attempt: {type: integer}, maxAttempts: {type: integer}, idempotencyKey: {type: string}}}]}
     Attachment: {allOf: [{$ref: '#/components/schemas/ResourceBase'}, {type: object, required: [projectId, intakeId, originalName, mimeType, sizeBytes, sha256], properties: {projectId: {type: string, format: uuid}, intakeId: {type: string, format: uuid}, originalName: {type: string}, mimeType: {type: string}, sizeBytes: {type: integer, format: int64}, sha256: {type: string}}}]}
-    AgentRun: {allOf: [{$ref: '#/components/schemas/ResourceBase'}, {type: object, required: [projectId, provider, commandSummary, status, durationMs, startedAt], properties: {projectId: {type: string, format: uuid}, jobId: {type: [string, 'null'], format: uuid}, taskId: {type: [string, 'null'], format: uuid}, provider: {oneOf: [{$ref: '#/components/schemas/CLIProvider'}, {const: validation}]}, commandSummary: {type: string}, pid: {type: [integer, 'null']}, sessionId: {type: string}, status: {type: string, enum: [starting, running, succeeded, failed, cancelled, timed_out]}, exitCode: {type: [integer, 'null']}, durationMs: {type: integer, format: int64}, terminationReason: {type: string}, startedAt: {type: string, format: date-time}, finishedAt: {type: [string, 'null'], format: date-time}}}]}
+    AgentRun: {allOf: [{$ref: '#/components/schemas/ResourceBase'}, {type: object, required: [projectId, provider, commandSummary, status, durationMs, startedAt], properties: {projectId: {type: string, format: uuid}, jobId: {type: [string, 'null'], format: uuid}, taskId: {type: [string, 'null'], format: uuid}, provider: {oneOf: [{$ref: '#/components/schemas/CLIProvider'}, {const: validation}]}, commandSummary: {type: string}, pid: {type: [integer, 'null']}, sessionId: {type: string}, status: {type: string, enum: [starting, running, cancelling, succeeded, failed, interrupted, cancelled, timed_out]}, exitCode: {type: [integer, 'null']}, durationMs: {type: integer, format: int64}, terminationReason: {type: string}, startedAt: {type: string, format: date-time}, finishedAt: {type: [string, 'null'], format: date-time}}}]}
+    AgentRunProvider: {oneOf: [{$ref: '#/components/schemas/CLIProvider'}, {const: validation}]}
+    ObservabilityFilter:
+      type: object
+      additionalProperties: false
+      properties:
+        from: {type: string, format: date-time}
+        to: {type: string, format: date-time}
+        provider: {$ref: '#/components/schemas/AgentRunProvider'}
+        planId: {type: string, format: uuid}
+    ObservabilityPagination: {type: object, required: [page, pageSize, totalItems, hasMore], additionalProperties: false, properties: {page: {type: integer}, pageSize: {type: integer}, totalItems: {type: integer}, hasMore: {type: boolean}}}
+    ObservabilityRequirement: {type: object, required: [id, status], additionalProperties: false, properties: {id: {type: string, format: uuid}, title: {type: string}, status: {type: string}}}
+    ObservabilityPlan: {type: object, required: [id, requirementId, status], additionalProperties: false, properties: {id: {type: string, format: uuid}, requirementId: {type: string, format: uuid}, title: {type: string}, status: {type: string}}}
+    ObservabilityTask: {type: object, required: [id, planId, taskKey, status], additionalProperties: false, properties: {id: {type: string, format: uuid}, planId: {type: string, format: uuid}, taskKey: {type: string}, title: {type: string}, status: {type: string}}}
+    ObservabilityAgentRun:
+      type: object
+      required: [id, provider, status, startedAt]
+      additionalProperties: false
+      description: Redaction-safe physical call detail. It never contains a CLI session ID, command arguments, environment, raw error body, source, attachment content, or logs.
+      properties:
+        id: {type: string, format: uuid}
+        requirementId: {type: string, format: uuid}
+        planId: {type: string, format: uuid}
+        taskId: {type: string, format: uuid}
+        logicalOperationId: {type: string, format: uuid}
+        operationType: {type: string, enum: [requirement_discussion, plan_generation, task_execution, validation]}
+        jobAttempt: {type: integer, minimum: 1}
+        retryCount: {type: integer, minimum: 0}
+        provider: {$ref: '#/components/schemas/AgentRunProvider'}
+        sessionMode: {type: string, enum: [new, reused, snapshot_restored, not_applicable]}
+        status: {type: string, enum: [starting, running, cancelling, succeeded, failed, interrupted, cancelled, timed_out]}
+        exitCode: {type: integer}
+        queueWaitMs: {type: integer, format: int64, minimum: 0}
+        durationMs: {type: integer, format: int64, minimum: 0}
+        failureCategory: {type: string}
+        outputBytes: {type: integer, format: int64, minimum: 0}
+        outputLines: {type: integer, format: int64, minimum: 0}
+        eventCount: {type: integer, format: int64, minimum: 0}
+        outputTruncated: {type: boolean}
+        inputTokens: {type: integer, format: int64, minimum: 0}
+        outputTokens: {type: integer, format: int64, minimum: 0}
+        totalTokens: {type: integer, format: int64, minimum: 0}
+        costAmount: {type: string, pattern: '^[0-9]+(?:\.[0-9]+)?$'}
+        costCurrency: {type: string}
+        startedAt: {type: string, format: date-time}
+        finishedAt: {type: string, format: date-time}
+    ObservabilityRate: {type: object, required: [available, numerator, denominator], additionalProperties: false, properties: {available: {type: boolean}, numerator: {type: integer}, denominator: {type: integer}, value: {type: number, minimum: 0, maximum: 1}}}
+    ObservabilityFailureCount: {type: object, required: [category, count], additionalProperties: false, properties: {category: {type: string}, count: {type: integer, minimum: 1}}}
+    ObservabilityDurationSummary: {type: object, required: [available, coverageCount], additionalProperties: false, properties: {available: {type: boolean}, coverageCount: {type: integer, minimum: 0}, totalMs: {type: integer, format: int64, minimum: 0}, averageMs: {type: integer, format: int64, minimum: 0}}}
+    ObservabilityDurationTrend: {type: object, required: [bucket, runCount, queueWait, runDuration], additionalProperties: false, properties: {bucket: {type: string, format: date}, runCount: {type: integer, minimum: 1}, queueWait: {$ref: '#/components/schemas/ObservabilityDurationSummary'}, runDuration: {$ref: '#/components/schemas/ObservabilityDurationSummary'}}}
+    ObservabilityTokenSummary: {type: object, required: [available, coverageCount, totalRunCount], additionalProperties: false, properties: {available: {type: boolean}, coverageCount: {type: integer, minimum: 0}, totalRunCount: {type: integer, minimum: 0}, inputTokens: {type: integer, format: int64, minimum: 0}, outputTokens: {type: integer, format: int64, minimum: 0}, totalTokens: {type: integer, format: int64, minimum: 0}}}
+    ObservabilityCurrencyCost: {type: object, required: [currency, amount, coverageCount], additionalProperties: false, properties: {currency: {type: string}, amount: {type: string}, coverageCount: {type: integer, minimum: 1}}}
+    ObservabilityCostSummary: {type: object, required: [available, coverageCount, totalRunCount, currencies], additionalProperties: false, properties: {available: {type: boolean}, coverageCount: {type: integer, minimum: 0}, totalRunCount: {type: integer, minimum: 0}, currencies: {type: array, items: {$ref: '#/components/schemas/ObservabilityCurrencyCost'}}}}
+    ObservabilityUsageSummary: {type: object, required: [tokens, costs], properties: {tokens: {$ref: '#/components/schemas/ObservabilityTokenSummary'}, costs: {$ref: '#/components/schemas/ObservabilityCostSummary'}}}
+    ObservabilityUsageGroup: {allOf: [{$ref: '#/components/schemas/ObservabilityUsageSummary'}, {type: object, required: [key], properties: {key: {type: string}, title: {type: string}}}]}
+    ObservabilityUsage: {type: object, required: [overall, byProvider, byRequirement, byPlan], additionalProperties: false, properties: {overall: {$ref: '#/components/schemas/ObservabilityUsageSummary'}, byProvider: {type: array, items: {$ref: '#/components/schemas/ObservabilityUsageGroup'}}, byRequirement: {type: array, items: {$ref: '#/components/schemas/ObservabilityUsageGroup'}}, byPlan: {type: array, items: {$ref: '#/components/schemas/ObservabilityUsageGroup'}}}}
+    AgentRunObservabilityAggregates: {type: object, required: [sessionReuseRate, snapshotRestoreRate, planGenerationSuccessRate, taskExecutionSuccessRate, failureCategories, durationTrend, usage], additionalProperties: false, properties: {sessionReuseRate: {$ref: '#/components/schemas/ObservabilityRate'}, snapshotRestoreRate: {$ref: '#/components/schemas/ObservabilityRate'}, planGenerationSuccessRate: {$ref: '#/components/schemas/ObservabilityRate'}, taskExecutionSuccessRate: {$ref: '#/components/schemas/ObservabilityRate'}, failureCategories: {type: array, items: {$ref: '#/components/schemas/ObservabilityFailureCount'}}, durationTrend: {type: array, items: {$ref: '#/components/schemas/ObservabilityDurationTrend'}}, usage: {$ref: '#/components/schemas/ObservabilityUsage'}}}
+    AgentRunObservabilitySummary: {type: object, required: [requirements, plans, tasks, runs, aggregates], properties: {requirements: {type: array, items: {$ref: '#/components/schemas/ObservabilityRequirement'}}, plans: {type: array, items: {$ref: '#/components/schemas/ObservabilityPlan'}}, tasks: {type: array, items: {$ref: '#/components/schemas/ObservabilityTask'}}, runs: {type: array, items: {$ref: '#/components/schemas/ObservabilityAgentRun'}}, aggregates: {$ref: '#/components/schemas/AgentRunObservabilityAggregates'}}}
+    AgentRunObservabilityResponse: {allOf: [{$ref: '#/components/schemas/AgentRunObservabilitySummary'}, {type: object, required: [projectId, filter, pagination], properties: {projectId: {type: string, format: uuid}, filter: {$ref: '#/components/schemas/ObservabilityFilter'}, pagination: {$ref: '#/components/schemas/ObservabilityPagination'}}}]}
+    ObservabilityExportOptions: {type: object, required: [includeProjectName, includeWorkspacePath, includeBusinessTitles], additionalProperties: false, properties: {includeProjectName: {type: boolean}, includeWorkspacePath: {type: boolean}, includeBusinessTitles: {type: boolean}}}
+    AgentRunObservabilityExport: {type: object, required: [generatedAt, projectId, filter, options, summary], additionalProperties: false, properties: {generatedAt: {type: string, format: date-time}, projectId: {type: string, format: uuid}, projectName: {type: string}, workspacePath: {type: string}, filter: {$ref: '#/components/schemas/ObservabilityFilter'}, options: {$ref: '#/components/schemas/ObservabilityExportOptions'}, summary: {$ref: '#/components/schemas/AgentRunObservabilitySummary'}}}
     CLIProbeResult:
       type: object
       required: [provider, available, output, exitCode, error]

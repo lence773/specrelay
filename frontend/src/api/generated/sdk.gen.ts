@@ -2,7 +2,7 @@
 
 import { type Client, type ClientMeta, formDataBodySerializer, type Options as Options2, type RequestResult, type ServerSentEventsResult, type TDataShape } from './client';
 import { client } from './client.gen';
-import type { CreateIntakeData, CreateIntakeErrors, CreateIntakeResponses, CreateProjectData, CreateProjectErrors, CreateProjectResponses, DeletePlanData, DeletePlanErrors, DeletePlanResponses, DeleteProjectData, DeleteProjectErrors, DeleteProjectResponses, DiscussRequirementData, DiscussRequirementErrors, DiscussRequirementResponses, ExchangeAccessTokenData, ExchangeAccessTokenErrors, ExchangeAccessTokenResponses, GeneratePlanData, GeneratePlanErrors, GeneratePlanResponses, GetAgentRunLogData, GetAgentRunLogErrors, GetAgentRunLogResponses, GetIntakeData, GetIntakeErrors, GetIntakeResponses, GetPlanData, GetPlanErrors, GetPlanResponses, GetProjectData, GetProjectErrors, GetProjectResponses, GetProjectSettingsData, GetProjectSettingsErrors, GetProjectSettingsResponses, ListAgentRunsData, ListAgentRunsErrors, ListAgentRunsResponses, ListDirectoriesData, ListDirectoriesErrors, ListDirectoriesResponses, ListEventsData, ListEventsErrors, ListEventsResponses, ListIntakesData, ListIntakesErrors, ListIntakesResponses, ListPlansData, ListPlansErrors, ListPlansResponses, ListPlanTasksData, ListPlanTasksErrors, ListPlanTasksResponses, ListProjectsData, ListProjectsErrors, ListProjectsResponses, ProbeAgentData, ProbeAgentErrors, ProbeAgentResponses, RotateMcpTokenData, RotateMcpTokenErrors, RotateMcpTokenResponses, RunPlanData, RunPlanErrors, RunPlanResponses, RunTaskData, RunTaskErrors, RunTaskResponses, SetProjectAutomationData, SetProjectAutomationErrors, SetProjectAutomationResponses, StopPlanData, StopPlanErrors, StopPlanResponses, StopTaskData, StopTaskErrors, StopTaskResponses, StreamEventsData, StreamEventsErrors, StreamEventsResponse, StreamEventsResponses, UpdateIntakeData, UpdateIntakeErrors, UpdateIntakeResponses, UpdateProjectData, UpdateProjectErrors, UpdateProjectResponses, UpdateProjectSettingsData, UpdateProjectSettingsErrors, UpdateProjectSettingsResponses, UploadAttachmentData, UploadAttachmentErrors, UploadAttachmentResponses } from './types.gen';
+import type { CreateFeedbackData, CreateFeedbackErrors, CreateFeedbackResponses, CreateIntakeData, CreateIntakeErrors, CreateIntakeResponses, CreateProjectData, CreateProjectErrors, CreateProjectResponses, DeletePlanData, DeletePlanErrors, DeletePlanResponses, DeleteProjectData, DeleteProjectErrors, DeleteProjectResponses, DiscussRequirementData, DiscussRequirementErrors, DiscussRequirementResponses, ExchangeAccessTokenData, ExchangeAccessTokenErrors, ExchangeAccessTokenResponses, ExportProjectObservabilityData, ExportProjectObservabilityErrors, ExportProjectObservabilityResponses, GeneratePlanData, GeneratePlanErrors, GeneratePlanResponses, GetAgentRunLogData, GetAgentRunLogErrors, GetAgentRunLogResponses, GetCheckpointData, GetCheckpointErrors, GetCheckpointResponses, GetFeedbackContextData, GetFeedbackContextErrors, GetFeedbackContextResponses, GetIntakeData, GetIntakeErrors, GetIntakeResponses, GetPlanData, GetPlanErrors, GetPlanResponses, GetProjectData, GetProjectErrors, GetProjectResponses, GetProjectSettingsData, GetProjectSettingsErrors, GetProjectSettingsResponses, GetTaskData, GetTaskErrors, GetTaskResponses, ListAgentRunsData, ListAgentRunsErrors, ListAgentRunsResponses, ListDirectoriesData, ListDirectoriesErrors, ListDirectoriesResponses, ListEventsData, ListEventsErrors, ListEventsResponses, ListIntakesData, ListIntakesErrors, ListIntakesResponses, ListPlansData, ListPlansErrors, ListPlansResponses, ListPlanTasksData, ListPlanTasksErrors, ListPlanTasksResponses, ListProjectsData, ListProjectsErrors, ListProjectsResponses, ProbeAgentData, ProbeAgentErrors, ProbeAgentResponses, QueryProjectObservabilityData, QueryProjectObservabilityErrors, QueryProjectObservabilityResponses, RotateMcpTokenData, RotateMcpTokenErrors, RotateMcpTokenResponses, RunPlanData, RunPlanErrors, RunPlanResponses, RunTaskData, RunTaskErrors, RunTaskResponses, SetProjectAutomationData, SetProjectAutomationErrors, SetProjectAutomationResponses, StopPlanData, StopPlanErrors, StopPlanResponses, StopTaskData, StopTaskErrors, StopTaskResponses, StreamEventsData, StreamEventsErrors, StreamEventsResponse, StreamEventsResponses, UpdateIntakeData, UpdateIntakeErrors, UpdateIntakeResponses, UpdateProjectData, UpdateProjectErrors, UpdateProjectResponses, UpdateProjectSettingsData, UpdateProjectSettingsErrors, UpdateProjectSettingsResponses, UploadAttachmentData, UploadAttachmentErrors, UploadAttachmentResponses } from './types.gen';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -171,6 +171,36 @@ export const discussRequirement = <ThrowOnError extends boolean = false>(options
     }
 });
 
+/**
+ * Creates feedback only after the parent requirement and every optional plan/task/checkpoint/file/diff association have been validated as one chain in this project. Validation and writes use one transaction.
+ */
+export const createFeedback = <ThrowOnError extends boolean = false>(options: Options<CreateFeedbackData, ThrowOnError>): RequestResult<CreateFeedbackResponses, CreateFeedbackErrors, ThrowOnError> => (options.client ?? client).post<CreateFeedbackResponses, CreateFeedbackErrors, ThrowOnError>({
+    security: [{
+            in: 'cookie',
+            name: 'specrelay_session',
+            type: 'apiKey'
+        }, { scheme: 'bearer', type: 'http' }],
+    url: '/projects/{projectId}/feedback',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Read-only, size-bounded context for review. It includes the original requirement, optional execution location, selected Diff fragment, task acceptance state, and subsequent revision state without returning unrestricted source text.
+ */
+export const getFeedbackContext = <ThrowOnError extends boolean = false>(options: Options<GetFeedbackContextData, ThrowOnError>): RequestResult<GetFeedbackContextResponses, GetFeedbackContextErrors, ThrowOnError> => (options.client ?? client).get<GetFeedbackContextResponses, GetFeedbackContextErrors, ThrowOnError>({
+    security: [{
+            in: 'cookie',
+            name: 'specrelay_session',
+            type: 'apiKey'
+        }, { scheme: 'bearer', type: 'http' }],
+    url: '/projects/{projectId}/feedback/{feedbackId}',
+    ...options
+});
+
 export const getIntake = <ThrowOnError extends boolean = false>(options: Options<GetIntakeData, ThrowOnError>): RequestResult<GetIntakeResponses, GetIntakeErrors, ThrowOnError> => (options.client ?? client).get<GetIntakeResponses, GetIntakeErrors, ThrowOnError>({
     security: [{
             in: 'cookie',
@@ -292,6 +322,26 @@ export const stopPlan = <ThrowOnError extends boolean = false>(options: Options<
     }
 });
 
+export const getTask = <ThrowOnError extends boolean = false>(options: Options<GetTaskData, ThrowOnError>): RequestResult<GetTaskResponses, GetTaskErrors, ThrowOnError> => (options.client ?? client).get<GetTaskResponses, GetTaskErrors, ThrowOnError>({
+    security: [{
+            in: 'cookie',
+            name: 'specrelay_session',
+            type: 'apiKey'
+        }, { scheme: 'bearer', type: 'http' }],
+    url: '/tasks/{taskId}',
+    ...options
+});
+
+export const getCheckpoint = <ThrowOnError extends boolean = false>(options: Options<GetCheckpointData, ThrowOnError>): RequestResult<GetCheckpointResponses, GetCheckpointErrors, ThrowOnError> => (options.client ?? client).get<GetCheckpointResponses, GetCheckpointErrors, ThrowOnError>({
+    security: [{
+            in: 'cookie',
+            name: 'specrelay_session',
+            type: 'apiKey'
+        }, { scheme: 'bearer', type: 'http' }],
+    url: '/checkpoints/{checkpointId}',
+    ...options
+});
+
 export const runTask = <ThrowOnError extends boolean = false>(options: Options<RunTaskData, ThrowOnError>): RequestResult<RunTaskResponses, RunTaskErrors, ThrowOnError> => (options.client ?? client).post<RunTaskResponses, RunTaskErrors, ThrowOnError>({
     security: [{
             in: 'cookie',
@@ -327,6 +377,32 @@ export const listAgentRuns = <ThrowOnError extends boolean = false>(options: Opt
             type: 'apiKey'
         }, { scheme: 'bearer', type: 'http' }],
     url: '/projects/{projectId}/agent-runs',
+    ...options
+});
+
+/**
+ * Query structured local Agent Run observability. The service reads only the local database and calculates logical-operation success rates without counting snapshot fallback calls as separate business executions.
+ */
+export const queryProjectObservability = <ThrowOnError extends boolean = false>(options: Options<QueryProjectObservabilityData, ThrowOnError>): RequestResult<QueryProjectObservabilityResponses, QueryProjectObservabilityErrors, ThrowOnError> => (options.client ?? client).get<QueryProjectObservabilityResponses, QueryProjectObservabilityErrors, ThrowOnError>({
+    security: [{
+            in: 'cookie',
+            name: 'specrelay_session',
+            type: 'apiKey'
+        }, { scheme: 'bearer', type: 'http' }],
+    url: '/projects/{projectId}/observability',
+    ...options
+});
+
+/**
+ * Generate a redacted JSON or CSV download entirely in the local backend. Sensitive project metadata and business titles are excluded by default and can be enabled independently.
+ */
+export const exportProjectObservability = <ThrowOnError extends boolean = false>(options: Options<ExportProjectObservabilityData, ThrowOnError>): RequestResult<ExportProjectObservabilityResponses, ExportProjectObservabilityErrors, ThrowOnError> => (options.client ?? client).get<ExportProjectObservabilityResponses, ExportProjectObservabilityErrors, ThrowOnError>({
+    security: [{
+            in: 'cookie',
+            name: 'specrelay_session',
+            type: 'apiKey'
+        }, { scheme: 'bearer', type: 'http' }],
+    url: '/projects/{projectId}/observability/export',
     ...options
 });
 

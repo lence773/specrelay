@@ -80,8 +80,11 @@ func run() error {
 			logger.Warn("unregister runtime instance failed", "error", cleanupErr)
 		}
 	}()
-	if err = store.RecoverJobs(runtimeCtx); err != nil {
-		return fmt.Errorf("recover jobs: %w", err)
+	if err = store.ReconcileRuntimeState(runtimeCtx, cfg.InstanceID); err != nil {
+		// Recovery is retryable and transactional. Starting the service does not
+		// forge terminal states merely because the database had a brief fault;
+		// the periodic pass below will converge from persisted evidence later.
+		logger.Warn("startup runtime reconciliation failed; periodic retry will continue", "error", err)
 	}
 	go heartbeatRuntimeInstance(runtimeCtx, store, cfg.InstanceID, cfg.LeaseHeartbeat, logger)
 	runner := agent.NewRunner()

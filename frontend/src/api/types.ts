@@ -2,6 +2,11 @@ import type { CliProbeResponse, CliProvider } from './generated/types.gen'
 
 export type {
   AsyncResponse,
+  AgentRunObservabilityAggregates,
+  AgentRunObservabilityExport,
+  AgentRunObservabilityResponse,
+  AgentRunObservabilitySummary,
+  AgentRunProvider,
   CliProbeResponse as CLIProbeResponse,
   CliProbeResult as CLIProbeResult,
   CliProvider as CLIProvider,
@@ -9,10 +14,49 @@ export type {
   DirectoryListing,
   Error as APIError,
   Event as EventRecord,
+  FeedbackAssociationSummary,
+  FeedbackCheckpointSummary,
+  FeedbackContext,
+  FeedbackCreateInput,
+  FeedbackCreateResponse,
+  FeedbackDiffSummary,
+  FeedbackFileSummary,
+  FeedbackIntakeSummary,
+  FeedbackPlanSummary,
+  FeedbackReference,
+  FeedbackRevision,
+  FeedbackRevisionDiscussionResult,
+  FeedbackRevisionState,
+  FeedbackRevisionStatus,
+  FeedbackRevisionSummary,
+  FeedbackTaskSummary,
+  GetCheckpointResponse,
+  GetPlanResponse,
+  GetTaskResponse,
   Intake,
   IntakeInput,
   Plan,
+  PlanExecutionSnapshot,
+  PlanExecutionSnapshotFile,
+  PlanExecutionSnapshotHunk,
   PlanTask,
+  ObservabilityAgentRun,
+  ObservabilityCostSummary,
+  ObservabilityCurrencyCost,
+  ObservabilityDurationSummary,
+  ObservabilityDurationTrend,
+  ObservabilityExportOptions,
+  ObservabilityFailureCount,
+  ObservabilityFilter,
+  ObservabilityPagination,
+  ObservabilityPlan,
+  ObservabilityRate,
+  ObservabilityRequirement,
+  ObservabilityTask,
+  ObservabilityTokenSummary,
+  ObservabilityUsage,
+  ObservabilityUsageGroup,
+  ObservabilityUsageSummary,
   Project,
   ProjectSettings,
   RequirementDiscussionMessage,
@@ -63,3 +107,42 @@ export interface AgentRunLog {
   nextBefore?:number
   updatedAt:string
 }
+
+export type ObservabilityQuery = import('./generated/types.gen').QueryProjectObservabilityData['query']
+export type ObservabilityExportRequest = NonNullable<import('./generated/types.gen').ExportProjectObservabilityData['query']>
+
+export interface LocalObservabilityExport {
+  blob:Blob
+  filename:string
+  contentType:string
+}
+
+export type FeedbackAssociationInput = Pick<
+  import('./generated/types.gen').FeedbackCreateInput,
+  'requirementId'|'planId'|'taskId'|'checkpointId'|'fileId'|'diffHunkId'|'diffLineSide'|'diffLineStart'|'diffLineEnd'
+>
+
+export type FeedbackDiffLineRange = {
+  diffHunkId:UUID
+  diffLineSide:NonNullable<import('./generated/types.gen').FeedbackCreateInput['diffLineSide']>
+  diffLineStart:number
+  diffLineEnd:number
+}
+
+export type FeedbackAssociationTarget =
+  | {kind:'plan';id:UUID}
+  | {kind:'task';id:UUID}
+  | {kind:'checkpoint';id:UUID}
+
+/**
+ * Feedback discussions deliberately exclude caller-supplied CLI session IDs.
+ * The server resolves a session only after matching project, feedback, and provider.
+ */
+export type FeedbackDiscussionRequest = Pick<
+  import('./generated/types.gen').RequirementDiscussionRequest,
+  'title'|'body'|'messages'|'provider'
+>
+
+export type PlanDetail = import('./generated/types.gen').GetPlanResponse
+export type TaskDetail = import('./generated/types.gen').GetTaskResponse
+export type CheckpointDetail = import('./generated/types.gen').GetCheckpointResponse
