@@ -189,7 +189,7 @@ jobs:
         id: windows-certificate
         shell: pwsh
         env:
-          OFFICIAL_RELEASE: ${{ needs.validate.outputs.publish_release }}
+          OFFICIAL_RELEASE: ${{ needs.validate.outputs.official_release }}
           WINDOWS_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
           WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
         run: |
@@ -290,7 +290,7 @@ jobs:
         id: apple-keychain
         shell: bash
         env:
-          OFFICIAL_RELEASE: ${{ needs.validate.outputs.publish_release }}
+          OFFICIAL_RELEASE: ${{ needs.validate.outputs.official_release }}
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
@@ -390,7 +390,7 @@ jobs:
         id: apple-keychain
         shell: bash
         env:
-          OFFICIAL_RELEASE: ${{ needs.validate.outputs.publish_release }}
+          OFFICIAL_RELEASE: ${{ needs.validate.outputs.official_release }}
           APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
           APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
           APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
