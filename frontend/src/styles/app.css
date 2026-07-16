@@ -1343,6 +1343,49 @@ textarea {
 .modal.wide {
   width: min(720px, calc(100vw - 30px));
 }
+.execution-context-review {
+  display: grid;
+  gap: 12px;
+}
+.execution-context-review > p {
+  margin: 0;
+}
+.execution-context-fingerprint {
+  overflow-wrap: anywhere;
+}
+.execution-context-differences {
+  display: grid;
+  gap: 8px;
+  max-height: 42vh;
+  overflow: auto;
+}
+.execution-context-differences article {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 10px;
+  background: rgba(255, 255, 255, 0.02);
+}
+.execution-context-differences article > header,
+.execution-context-differences dl {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+}
+.execution-context-differences article > p {
+  margin: 8px 0;
+}
+.execution-context-differences dl {
+  margin: 0;
+  align-items: flex-start;
+}
+.execution-context-differences dl > div {
+  min-width: 0;
+  flex: 1;
+}
+.execution-context-differences dd {
+  margin: 3px 0 0;
+  overflow-wrap: anywhere;
+}
 .form-field {
   display: flex;
   flex-direction: column;

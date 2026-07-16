@@ -746,6 +746,55 @@ export type EventPage = {
     nextBefore: number | null;
 };
 
+export type ExecutionContextDifference = {
+    field: string;
+    baselineValue: string;
+    currentValue: string;
+    severity: 'safe_ignore' | 'needs_confirmation' | 'must_block';
+    reason: string;
+    recommendedAction: 'continue' | 'review_and_accept_or_regenerate' | 'regenerate_plan' | 'resolve_conflicts' | 'repair_workspace_and_recapture';
+};
+
+export type ExecutionContextDriftReport = {
+    severity: 'clean' | 'safe_ignore' | 'needs_confirmation' | 'must_block';
+    differences: Array<ExecutionContextDifference>;
+    fingerprint: string;
+    cliAllowed: boolean;
+};
+
+export type PlanExecutionContext = {
+    baselineSnapshotId?: string | null;
+    baselineSnapshotSequence: number;
+    report: ExecutionContextDriftReport;
+};
+
+export type AcceptPlanExecutionContextInput = {
+    baselineSnapshotId: string;
+    fingerprint: string;
+    reason: string;
+    provider?: CliProvider;
+};
+
+export type PlanDriftAudit = {
+    id: string;
+    projectId: string;
+    planId: string;
+    sequence: number;
+    action: 'snapshot_updated' | 'plan_regenerated' | 'execution_abandoned';
+    originalSnapshotId?: string | null;
+    newSnapshotId?: string | null;
+    targetPlanId?: string | null;
+    rawDiff: unknown;
+    channel: string;
+    reason: string;
+    occurredAt: string;
+};
+
+export type AcceptPlanExecutionContextResponse = {
+    checkpoint: PlanExecutionSnapshot;
+    audit: PlanDriftAudit;
+};
+
 export type AsyncResponse = {
     jobId: string;
     state: string;
@@ -1433,6 +1482,66 @@ export type GetPlanResponses = {
 };
 
 export type GetPlanResponse = GetPlanResponses[keyof GetPlanResponses];
+
+export type GetPlanExecutionContextData = {
+    body?: never;
+    path: {
+        planId: string;
+    };
+    query?: {
+        provider?: CliProvider;
+    };
+    url: '/plans/{planId}/execution-context';
+};
+
+export type GetPlanExecutionContextErrors = {
+    /**
+     * Error response
+     */
+    default: Error;
+};
+
+export type GetPlanExecutionContextError = GetPlanExecutionContextErrors[keyof GetPlanExecutionContextErrors];
+
+export type GetPlanExecutionContextResponses = {
+    /**
+     * Current execution context and immutable baseline
+     */
+    200: PlanExecutionContext;
+};
+
+export type GetPlanExecutionContextResponse = GetPlanExecutionContextResponses[keyof GetPlanExecutionContextResponses];
+
+export type AcceptPlanExecutionContextData = {
+    body: AcceptPlanExecutionContextInput;
+    path: {
+        planId: string;
+    };
+    query?: never;
+    url: '/plans/{planId}/execution-context/accept';
+};
+
+export type AcceptPlanExecutionContextErrors = {
+    /**
+     * Optimistic version conflict
+     */
+    409: Error;
+    /**
+     * Error response
+     */
+    default: Error;
+};
+
+export type AcceptPlanExecutionContextError = AcceptPlanExecutionContextErrors[keyof AcceptPlanExecutionContextErrors];
+
+export type AcceptPlanExecutionContextResponses = {
+    /**
+     * Accepted immutable snapshot and audit record
+     */
+    200: AcceptPlanExecutionContextResponse;
+};
+
+export type AcceptPlanExecutionContextResponse2 = AcceptPlanExecutionContextResponses[keyof AcceptPlanExecutionContextResponses];
 
 export type ListPlanTasksData = {
     body?: never;

@@ -126,6 +126,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/projects/{id}/plans", s.plans)
 	mux.HandleFunc("GET /api/v1/plans/{id}", s.plan)
 	mux.HandleFunc("DELETE /api/v1/plans/{id}", s.plan)
+	mux.HandleFunc("GET /api/v1/plans/{id}/execution-context", s.planExecutionContext)
+	mux.HandleFunc("POST /api/v1/plans/{id}/execution-context/accept", s.acceptPlanExecutionContext)
 	mux.HandleFunc("POST /api/v1/plans/{id}/run", s.runPlan)
 	mux.HandleFunc("POST /api/v1/plans/{id}/stop", s.stopPlan)
 	mux.HandleFunc("GET /api/v1/plans/{id}/tasks", s.tasks)
@@ -560,6 +562,34 @@ func (s *Server) plan(w http.ResponseWriter, r *http.Request) {
 	}
 	feedback, err := s.App.ListFeedbackForPlan(r.Context(), p.ProjectID, p.ID)
 	respond(w, r, map[string]any{"plan": p, "tasks": tasks, "feedback": feedback}, err)
+}
+
+func (s *Server) planExecutionContext(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathUUID(w, r, "id")
+	if !ok {
+		return
+	}
+	context, err := s.App.GetPlanExecutionContext(r.Context(), id, r.URL.Query().Get("provider"))
+	respond(w, r, context, err)
+}
+
+func (s *Server) acceptPlanExecutionContext(w http.ResponseWriter, r *http.Request) {
+	id, ok := pathUUID(w, r, "id")
+	if !ok {
+		return
+	}
+	var in struct {
+		BaselineSnapshotID uuid.UUID `json:"baselineSnapshotId"`
+		Fingerprint        string    `json:"fingerprint"`
+		Reason             string    `json:"reason"`
+		Provider           string    `json:"provider,omitempty"`
+	}
+	if err := decodeJSON(r, &in); err != nil {
+		badJSON(w, r, err)
+		return
+	}
+	checkpoint, audit, err := s.App.AcceptPlanExecutionContext(r.Context(), id, in.BaselineSnapshotID, in.Fingerprint, in.Reason, in.Provider)
+	respond(w, r, map[string]any{"checkpoint": checkpoint, "audit": audit}, err)
 }
 
 func (s *Server) runPlan(w http.ResponseWriter, r *http.Request) {
@@ -1462,6 +1492,11 @@ func respondStatus(w http.ResponseWriter, r *http.Request, status int, v any, er
 		return
 	}
 	switch {
+	case app.IsDriftBlocked(err):
+		blocked, _ := app.DriftBlock(err)
+		writeError(w, r, http.StatusConflict, "execution_context_drift", "Execution context changed and requires review", blocked.Report)
+	case errors.Is(err, domain.ErrPlanDriftResolutionRequired):
+		writeError(w, r, http.StatusConflict, "execution_context_not_confirmable", "Execution context must be repaired or the plan regenerated", nil)
 	case errors.Is(err, domain.ErrNotFound):
 		writeError(w, r, http.StatusNotFound, "resource_not_found", "Resource not found", nil)
 	case errors.Is(err, domain.ErrForbidden):

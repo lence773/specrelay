@@ -2,7 +2,7 @@
 
 import { type Client, type ClientMeta, formDataBodySerializer, type Options as Options2, type RequestResult, type ServerSentEventsResult, type TDataShape } from './client';
 import { client } from './client.gen';
-import type { CreateFeedbackData, CreateFeedbackErrors, CreateFeedbackResponses, CreateIntakeData, CreateIntakeErrors, CreateIntakeResponses, CreateProjectData, CreateProjectErrors, CreateProjectResponses, DeletePlanData, DeletePlanErrors, DeletePlanResponses, DeleteProjectData, DeleteProjectErrors, DeleteProjectResponses, DiscussRequirementData, DiscussRequirementErrors, DiscussRequirementResponses, ExchangeAccessTokenData, ExchangeAccessTokenErrors, ExchangeAccessTokenResponses, ExportProjectObservabilityData, ExportProjectObservabilityErrors, ExportProjectObservabilityResponses, GeneratePlanData, GeneratePlanErrors, GeneratePlanResponses, GetAgentRunLogData, GetAgentRunLogErrors, GetAgentRunLogResponses, GetCheckpointData, GetCheckpointErrors, GetCheckpointResponses, GetFeedbackContextData, GetFeedbackContextErrors, GetFeedbackContextResponses, GetIntakeData, GetIntakeErrors, GetIntakeResponses, GetPlanData, GetPlanErrors, GetPlanResponses, GetProjectData, GetProjectErrors, GetProjectResponses, GetProjectSettingsData, GetProjectSettingsErrors, GetProjectSettingsResponses, GetTaskData, GetTaskErrors, GetTaskResponses, ListAgentRunsData, ListAgentRunsErrors, ListAgentRunsResponses, ListDirectoriesData, ListDirectoriesErrors, ListDirectoriesResponses, ListEventsData, ListEventsErrors, ListEventsResponses, ListIntakesData, ListIntakesErrors, ListIntakesResponses, ListPlansData, ListPlansErrors, ListPlansResponses, ListPlanTasksData, ListPlanTasksErrors, ListPlanTasksResponses, ListProjectsData, ListProjectsErrors, ListProjectsResponses, ProbeAgentData, ProbeAgentErrors, ProbeAgentResponses, QueryProjectObservabilityData, QueryProjectObservabilityErrors, QueryProjectObservabilityResponses, RotateMcpTokenData, RotateMcpTokenErrors, RotateMcpTokenResponses, RunPlanData, RunPlanErrors, RunPlanResponses, RunTaskData, RunTaskErrors, RunTaskResponses, SetProjectAutomationData, SetProjectAutomationErrors, SetProjectAutomationResponses, StopPlanData, StopPlanErrors, StopPlanResponses, StopTaskData, StopTaskErrors, StopTaskResponses, StreamEventsData, StreamEventsErrors, StreamEventsResponse, StreamEventsResponses, UpdateIntakeData, UpdateIntakeErrors, UpdateIntakeResponses, UpdateProjectData, UpdateProjectErrors, UpdateProjectResponses, UpdateProjectSettingsData, UpdateProjectSettingsErrors, UpdateProjectSettingsResponses, UploadAttachmentData, UploadAttachmentErrors, UploadAttachmentResponses } from './types.gen';
+import type { AcceptPlanExecutionContextData, AcceptPlanExecutionContextErrors, AcceptPlanExecutionContextResponses, CreateFeedbackData, CreateFeedbackErrors, CreateFeedbackResponses, CreateIntakeData, CreateIntakeErrors, CreateIntakeResponses, CreateProjectData, CreateProjectErrors, CreateProjectResponses, DeletePlanData, DeletePlanErrors, DeletePlanResponses, DeleteProjectData, DeleteProjectErrors, DeleteProjectResponses, DiscussRequirementData, DiscussRequirementErrors, DiscussRequirementResponses, ExchangeAccessTokenData, ExchangeAccessTokenErrors, ExchangeAccessTokenResponses, ExportProjectObservabilityData, ExportProjectObservabilityErrors, ExportProjectObservabilityResponses, GeneratePlanData, GeneratePlanErrors, GeneratePlanResponses, GetAgentRunLogData, GetAgentRunLogErrors, GetAgentRunLogResponses, GetCheckpointData, GetCheckpointErrors, GetCheckpointResponses, GetFeedbackContextData, GetFeedbackContextErrors, GetFeedbackContextResponses, GetIntakeData, GetIntakeErrors, GetIntakeResponses, GetPlanData, GetPlanErrors, GetPlanExecutionContextData, GetPlanExecutionContextErrors, GetPlanExecutionContextResponses, GetPlanResponses, GetProjectData, GetProjectErrors, GetProjectResponses, GetProjectSettingsData, GetProjectSettingsErrors, GetProjectSettingsResponses, GetTaskData, GetTaskErrors, GetTaskResponses, ListAgentRunsData, ListAgentRunsErrors, ListAgentRunsResponses, ListDirectoriesData, ListDirectoriesErrors, ListDirectoriesResponses, ListEventsData, ListEventsErrors, ListEventsResponses, ListIntakesData, ListIntakesErrors, ListIntakesResponses, ListPlansData, ListPlansErrors, ListPlansResponses, ListPlanTasksData, ListPlanTasksErrors, ListPlanTasksResponses, ListProjectsData, ListProjectsErrors, ListProjectsResponses, ProbeAgentData, ProbeAgentErrors, ProbeAgentResponses, QueryProjectObservabilityData, QueryProjectObservabilityErrors, QueryProjectObservabilityResponses, RotateMcpTokenData, RotateMcpTokenErrors, RotateMcpTokenResponses, RunPlanData, RunPlanErrors, RunPlanResponses, RunTaskData, RunTaskErrors, RunTaskResponses, SetProjectAutomationData, SetProjectAutomationErrors, SetProjectAutomationResponses, StopPlanData, StopPlanErrors, StopPlanResponses, StopTaskData, StopTaskErrors, StopTaskResponses, StreamEventsData, StreamEventsErrors, StreamEventsResponse, StreamEventsResponses, UpdateIntakeData, UpdateIntakeErrors, UpdateIntakeResponses, UpdateProjectData, UpdateProjectErrors, UpdateProjectResponses, UpdateProjectSettingsData, UpdateProjectSettingsErrors, UpdateProjectSettingsResponses, UploadAttachmentData, UploadAttachmentErrors, UploadAttachmentResponses } from './types.gen';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -282,6 +282,36 @@ export const getPlan = <ThrowOnError extends boolean = false>(options: Options<G
         }, { scheme: 'bearer', type: 'http' }],
     url: '/plans/{planId}',
     ...options
+});
+
+/**
+ * Returns the current authoritative execution-context preflight. The fingerprint must be echoed when accepting a needs_confirmation drift report.
+ */
+export const getPlanExecutionContext = <ThrowOnError extends boolean = false>(options: Options<GetPlanExecutionContextData, ThrowOnError>): RequestResult<GetPlanExecutionContextResponses, GetPlanExecutionContextErrors, ThrowOnError> => (options.client ?? client).get<GetPlanExecutionContextResponses, GetPlanExecutionContextErrors, ThrowOnError>({
+    security: [{
+            in: 'cookie',
+            name: 'specrelay_session',
+            type: 'apiKey'
+        }, { scheme: 'bearer', type: 'http' }],
+    url: '/plans/{planId}/execution-context',
+    ...options
+});
+
+/**
+ * Explicitly accepts the exact current needs_confirmation context. The operation creates a new immutable snapshot and audit record; it never mutates the original snapshot.
+ */
+export const acceptPlanExecutionContext = <ThrowOnError extends boolean = false>(options: Options<AcceptPlanExecutionContextData, ThrowOnError>): RequestResult<AcceptPlanExecutionContextResponses, AcceptPlanExecutionContextErrors, ThrowOnError> => (options.client ?? client).post<AcceptPlanExecutionContextResponses, AcceptPlanExecutionContextErrors, ThrowOnError>({
+    security: [{
+            in: 'cookie',
+            name: 'specrelay_session',
+            type: 'apiKey'
+        }, { scheme: 'bearer', type: 'http' }],
+    url: '/plans/{planId}/execution-context/accept',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
 });
 
 export const listPlanTasks = <ThrowOnError extends boolean = false>(options: Options<ListPlanTasksData, ThrowOnError>): RequestResult<ListPlanTasksResponses, ListPlanTasksErrors, ThrowOnError> => (options.client ?? client).get<ListPlanTasksResponses, ListPlanTasksErrors, ThrowOnError>({

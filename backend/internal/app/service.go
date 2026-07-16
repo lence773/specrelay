@@ -42,6 +42,15 @@ type DriftBlockedError struct {
 	Report DriftReport `json:"report"`
 }
 
+// PlanExecutionContext exposes the current authoritative preflight report with
+// the immutable snapshot that must be referenced if a user accepts the drift.
+// The snapshot ID prevents an older browser view from accepting a newer state.
+type PlanExecutionContext struct {
+	BaselineSnapshotID       *uuid.UUID  `json:"baselineSnapshotId,omitempty"`
+	BaselineSnapshotSequence int64       `json:"baselineSnapshotSequence"`
+	Report                   DriftReport `json:"report"`
+}
+
 func (e *DriftBlockedError) Error() string {
 	return fmt.Sprintf("execution context drift %s (fingerprint %s)", e.Report.Severity, e.Report.Fingerprint)
 }
@@ -53,7 +62,10 @@ func IsDriftBlocked(err error) bool {
 
 func DriftBlock(err error) (*DriftBlockedError, bool) {
 	var blocked *DriftBlockedError
-	return blocked, errors.As(err, &blocked)
+	if !errors.As(err, &blocked) {
+		return nil, false
+	}
+	return blocked, true
 }
 
 func New(store *repository.Store, runner *agent.Runner, dataDir string, lease time.Duration, logger *slog.Logger, instanceID ...string) *Service {
@@ -744,6 +756,66 @@ func planWorkspaceState(snapshot WorkspaceSnapshot) repository.PlanWorkspaceStat
 // lease, so a successful preflight is never treated as an authorization token.
 func (s *Service) CheckPlanExecutionDrift(ctx context.Context, planID uuid.UUID, requestedProvider string) (DriftReport, error) {
 	return s.checkPlanExecutionDrift(ctx, planID, requestedProvider, nil)
+}
+
+// GetPlanExecutionContext returns the same preflight report used by queueing,
+// plus the latest immutable snapshot used for compare-and-accept operations.
+func (s *Service) GetPlanExecutionContext(ctx context.Context, planID uuid.UUID, requestedProvider string) (PlanExecutionContext, error) {
+	// Keep this report byte-for-byte aligned with QueuePlan's authoritative
+	// preflight. In particular, an explicit one-run provider selection is a
+	// deliberate input, not drift by itself.
+	plan, err := s.Store.GetPlan(ctx, planID)
+	if err != nil {
+		return PlanExecutionContext{}, err
+	}
+	if err = s.validateRequestedProvider(ctx, plan.ProjectID, requestedProvider); err != nil {
+		return PlanExecutionContext{}, err
+	}
+	configSnapshot, err := planConfigSnapshotForProvider(plan.ConfigSnapshot, requestedProvider)
+	if err != nil {
+		return PlanExecutionContext{}, err
+	}
+	report, err := s.checkPlanExecutionDriftWithOptions(ctx, plan.ID, requestedProvider, &configSnapshot, driftCheckOptions{
+		IgnoreExecutionProviderSelection: true,
+	})
+	if err != nil {
+		return PlanExecutionContext{}, err
+	}
+	result := PlanExecutionContext{Report: report}
+	snapshot, err := s.Store.GetLatestPlanExecutionSnapshot(ctx, planID)
+	if errors.Is(err, domain.ErrNotFound) {
+		return result, nil
+	}
+	if err != nil {
+		return PlanExecutionContext{}, err
+	}
+	result.BaselineSnapshotID = &snapshot.ID
+	result.BaselineSnapshotSequence = snapshot.Sequence
+	return result, nil
+}
+
+// AcceptPlanExecutionContext records an explicit user disposition for the
+// exact report the caller reviewed. Only needs_confirmation drift can be
+// accepted; blocking integrity/content changes must be repaired or regenerated.
+func (s *Service) AcceptPlanExecutionContext(ctx context.Context, planID uuid.UUID, originalSnapshotID uuid.UUID, fingerprint, reason, requestedProvider string) (domain.PlanExecutionSnapshot, domain.PlanDriftAudit, error) {
+	current, err := s.GetPlanExecutionContext(ctx, planID, requestedProvider)
+	if err != nil {
+		return domain.PlanExecutionSnapshot{}, domain.PlanDriftAudit{}, err
+	}
+	if current.Report.Severity != DriftSeverityNeedsConfirmation || current.BaselineSnapshotID == nil {
+		return domain.PlanExecutionSnapshot{}, domain.PlanDriftAudit{}, domain.ErrPlanDriftResolutionRequired
+	}
+	if strings.TrimSpace(fingerprint) != current.Report.Fingerprint {
+		return domain.PlanExecutionSnapshot{}, domain.PlanDriftAudit{}, domain.ErrVersionConflict
+	}
+	if originalSnapshotID == uuid.Nil || originalSnapshotID != *current.BaselineSnapshotID {
+		return domain.PlanExecutionSnapshot{}, domain.PlanDriftAudit{}, domain.ErrVersionConflict
+	}
+	rawDiff, err := json.Marshal(current.Report)
+	if err != nil {
+		return domain.PlanExecutionSnapshot{}, domain.PlanDriftAudit{}, fmt.Errorf("marshal accepted execution context: %w", err)
+	}
+	return s.Store.AcceptPlanExecutionSnapshot(ctx, planID, originalSnapshotID, rawDiff, "desktop", reason)
 }
 
 type driftCheckOptions struct {

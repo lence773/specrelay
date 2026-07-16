@@ -20,6 +20,8 @@ const {
   createFeedback,
   checkpointDiff,
   getFeedback,
+  getPlanExecutionContext,
+  acceptPlanExecutionContext,
 } = vi.hoisted(() => ({
   getPlan: vi.fn(),
   getTask: vi.fn(),
@@ -28,6 +30,8 @@ const {
   createFeedback: vi.fn(),
   checkpointDiff: vi.fn(),
   getFeedback: vi.fn(),
+  getPlanExecutionContext: vi.fn(),
+  acceptPlanExecutionContext: vi.fn(),
 }));
 vi.mock("../../api/client", () => ({
   api: {
@@ -38,7 +42,11 @@ vi.mock("../../api/client", () => ({
     createFeedback,
     checkpointDiff,
     feedback: getFeedback,
+    planExecutionContext: getPlanExecutionContext,
+    acceptPlanExecutionContext,
   },
+  isExecutionContextDrift: (error: unknown) =>
+    error instanceof Error && error.message === "execution drift",
 }));
 
 import { PlansView } from "./PlansView";
@@ -116,6 +124,8 @@ describe("PlansView detail structure and actions", () => {
     createFeedback.mockReset();
     checkpointDiff.mockReset();
     getFeedback.mockReset();
+    getPlanExecutionContext.mockReset();
+    acceptPlanExecutionContext.mockReset();
     getFeedback.mockResolvedValue({
       feedback: {
         id: "feedback-created",
@@ -162,6 +172,64 @@ describe("PlansView detail structure and actions", () => {
     createFeedback.mockResolvedValue({
       feedback: { ...task, id: "feedback-created", kind: "feedback" },
     });
+    getPlanExecutionContext.mockResolvedValue({
+      baselineSnapshotId: "55555555-5555-4555-8555-555555555555",
+      baselineSnapshotSequence: 1,
+      report: {
+        severity: "needs_confirmation",
+        fingerprint: "a".repeat(64),
+        cliAllowed: false,
+        differences: [
+          {
+            field: "provider.execution",
+            baselineValue: "codex",
+            currentValue: "claude",
+            severity: "needs_confirmation",
+            reason: "the task execution provider changed",
+            recommendedAction: "review_and_accept_or_regenerate",
+          },
+        ],
+      },
+    });
+    acceptPlanExecutionContext.mockResolvedValue({});
+  });
+
+  it("requires an explicit reason before accepting execution-context drift and retrying", async () => {
+    runPlan.mockRejectedValueOnce(new Error("execution drift"));
+    renderPlans();
+
+    fireEvent.click(
+      await screen.findByRole("button", {
+        name: "整份计划执行提供方：Claude CLI",
+      }),
+    );
+    fireEvent.click(
+      await screen.findByRole("button", { name: "运行计划" }),
+    );
+
+    expect(
+      await screen.findByRole("heading", { name: "确认执行上下文变化" }),
+    ).toBeInTheDocument();
+    expect(await screen.findByText("provider.execution")).toBeInTheDocument();
+    const confirm = screen.getByRole("button", {
+      name: "确认当前上下文并运行",
+    });
+    expect(confirm).toBeDisabled();
+
+    fireEvent.change(screen.getByLabelText("接受原因"), {
+      target: { value: "已核对当前执行提供方切换是本次任务所需。" },
+    });
+    fireEvent.click(confirm);
+
+    await waitFor(() =>
+      expect(acceptPlanExecutionContext).toHaveBeenCalledWith(plan.id, {
+        baselineSnapshotId: "55555555-5555-4555-8555-555555555555",
+        fingerprint: "a".repeat(64),
+        reason: "已核对当前执行提供方切换是本次任务所需。",
+        provider: "claude",
+      }),
+    );
+    await waitFor(() => expect(runPlan).toHaveBeenCalledTimes(2));
   });
 
   it("keeps the title, plan actions, and progress fixed above the scrollable plan content", async () => {

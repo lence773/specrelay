@@ -9,6 +9,8 @@ import {
   getCheckpoint,
   getFeedbackContext,
   getPlan,
+  getPlanExecutionContext,
+  acceptPlanExecutionContext,
   getProjectSettings,
   getTask,
   listDirectories,
@@ -46,6 +48,7 @@ import type {
   Intake,
   IntakeInput,
   Plan,
+  PlanExecutionContext,
   PlanTask,
   AgentRunObservabilityResponse,
   ObservabilityExportRequest,
@@ -64,6 +67,10 @@ client.setConfig({baseUrl:'/api/v1',credentials:'same-origin'})
 
 export class ClientError extends Error {
   constructor(public status:number,public body:APIError){super(body.message);this.name='ClientError'}
+}
+
+export function isExecutionContextDrift(error:unknown):error is ClientError {
+  return error instanceof ClientError&&error.status===409&&error.body.code==='execution_context_drift'
 }
 
 type SDKResult<T>={data?:T;error?:unknown;response?:Response}
@@ -165,6 +172,8 @@ export const api={
   upload:(intakeId:UUID,file:File)=>unwrap(uploadAttachment({path:{intakeId},body:{file}})),
   plans:(projectId:UUID)=>unwrap<Plan[]>(listPlans({path:{projectId}})),
   plan:(id:UUID)=>unwrap<PlanDetail>(getPlan({path:{planId:id}})),
+  planExecutionContext:(id:UUID,provider?:CLIProvider)=>unwrap<PlanExecutionContext>(getPlanExecutionContext({path:{planId:id},query:provider===undefined?undefined:{provider}})),
+  acceptPlanExecutionContext:(id:UUID,input:{baselineSnapshotId:UUID;fingerprint:string;reason:string;provider?:CLIProvider})=>unwrap(acceptPlanExecutionContext({path:{planId:id},body:input})),
   task:(id:UUID)=>unwrap<TaskDetail>(getTask({path:{taskId:id}})),
   checkpointDiff:(id:UUID)=>unwrap<CheckpointDetail>(getCheckpoint({path:{checkpointId:id}})),
   feedbackReferences:(target:FeedbackAssociationTarget)=>getFeedbackReferences(target),

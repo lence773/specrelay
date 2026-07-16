@@ -2,11 +2,12 @@ import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { api } from "../../api/client";
+import { api, isExecutionContextDrift } from "../../api/client";
 import type {
   CLIProvider,
   FeedbackReference,
   Plan,
+  PlanExecutionContext,
   PlanTask,
   Project,
 } from "../../api/types";
@@ -28,6 +29,28 @@ type DiffTarget = {
   checkpointId: string;
   association: Partial<FeedbackDraft>;
 };
+
+type DriftTarget = {
+  plan: Plan;
+  provider?: CLIProvider;
+};
+
+function driftValue(value: string) {
+  return value.length > 320 ? `${value.slice(0, 317)}…` : value || "（空）";
+}
+
+function driftSeverityLabel(severity: PlanExecutionContext["report"]["severity"]) {
+  switch (severity) {
+    case "needs_confirmation":
+      return "需要确认";
+    case "must_block":
+      return "必须修复";
+    case "safe_ignore":
+      return "可安全忽略";
+    default:
+      return "无漂移";
+  }
+}
 
 const providerOptions: {
   value: ProviderChoice;
@@ -192,6 +215,8 @@ export function PlansView({
   const [feedbackDraft, setFeedbackDraft] = useState<FeedbackDraft>();
   const [diffTarget, setDiffTarget] = useState<DiffTarget>();
   const [localFeedbackId, setLocalFeedbackId] = useState<string>();
+  const [driftTarget, setDriftTarget] = useState<DriftTarget | null>(null);
+  const [driftReason, setDriftReason] = useState("");
   const queryClient = useQueryClient();
   const detail = useQuery({
     queryKey: ["plan", selected],
@@ -210,8 +235,54 @@ export function PlansView({
       setPlanProvider(undefined);
       await refreshPlan(variables.plan.id);
     },
-    onError: async (_, variables) => {
+    onError: async (error, variables) => {
       await refreshPlan(variables.plan.id);
+      if (isExecutionContextDrift(error)) {
+        setDriftReason("");
+        setDriftTarget(variables);
+      }
+    },
+  });
+  const executionContext = useQuery({
+    queryKey: ["plan-execution-context", driftTarget?.plan.id, driftTarget?.provider],
+    queryFn: () =>
+      api.planExecutionContext(driftTarget!.plan.id, driftTarget!.provider),
+    enabled: !!driftTarget,
+    retry: false,
+  });
+  const acceptExecutionContext = useMutation({
+    mutationFn: async (target: DriftTarget) => {
+      // Re-read immediately before accepting so the displayed fingerprint does
+      // not authorize an environment that changed while the modal was open.
+      const current = await api.planExecutionContext(target.plan.id, target.provider);
+      if (
+        current.report.severity !== "needs_confirmation" ||
+        !current.baselineSnapshotId
+      ) {
+        throw new Error("执行上下文已变化，请刷新后重新检查。");
+      }
+      if (!driftReason.trim()) {
+        throw new Error("请说明接受当前执行上下文的原因。");
+      }
+      await api.acceptPlanExecutionContext(target.plan.id, {
+        baselineSnapshotId: current.baselineSnapshotId,
+        fingerprint: current.report.fingerprint,
+        reason: driftReason.trim(),
+        ...(target.provider ? { provider: target.provider } : {}),
+      });
+      return api.runPlan(target.plan, target.provider);
+    },
+    onSuccess: async (_, target) => {
+      setDriftTarget(null);
+      setDriftReason("");
+      setPlanProvider(undefined);
+      await refreshPlan(target.plan.id);
+    },
+    onError: async (_, target) => {
+      await queryClient.invalidateQueries({
+        queryKey: ["plan-execution-context", target.plan.id],
+      });
+      await refreshPlan(target.plan.id);
     },
   });
   const runTask = useMutation({
@@ -285,7 +356,8 @@ export function PlansView({
   }, [detail.data, focus]);
 
   const selectPlan = (planId: string) => setSelected(planId);
-  const executionPending = runPlan.isPending || runTask.isPending;
+  const executionPending =
+    runPlan.isPending || runTask.isPending || acceptExecutionContext.isPending;
   const shownPlan = detail.data?.plan;
   const planFeedback: FeedbackReference[] = detail.data?.feedback ?? [];
   const planRequirementId =
@@ -427,8 +499,26 @@ export function PlansView({
                 </button>
                 {planError && (
                   <div className="form-error execution-error" role="alert">
-                    运行计划失败：{planError.message}
-                    。状态已刷新，可调整提供方后重试。
+                    {isExecutionContextDrift(planError) ? (
+                      <>
+                        执行前检测到上下文变化，系统没有启动 CLI。请查看差异后确认接受，或恢复工作区/重新生成计划。
+                        <button
+                          type="button"
+                          className="button secondary small"
+                          onClick={() => {
+                            setDriftReason("");
+                            setDriftTarget({
+                              plan: detail.data.plan,
+                              provider: planProvider,
+                            });
+                          }}
+                        >
+                          查看并处理变化
+                        </button>
+                      </>
+                    ) : (
+                      <>运行计划失败：{planError.message}。状态已刷新，可调整提供方后重试。</>
+                    )}
                   </div>
                 )}
               </section>
@@ -601,6 +691,113 @@ export function PlansView({
           onClose={() => setFeedbackDraft(undefined)}
           onCreated={openFeedback}
         />
+      )}
+      {driftTarget && (
+        <Modal
+          title="确认执行上下文变化"
+          onClose={() => {
+            if (!acceptExecutionContext.isPending) {
+              setDriftTarget(null);
+              setDriftReason("");
+            }
+          }}
+          wide
+          className="execution-context-modal"
+        >
+          {executionContext.isLoading ? (
+            <div className="loading">正在核对当前执行环境…</div>
+          ) : executionContext.isError ? (
+            <div className="form-error" role="alert">
+              无法读取当前执行上下文：{executionContext.error.message}
+            </div>
+          ) : executionContext.data ? (
+            <section className="execution-context-review">
+              <p>
+                当前状态：<strong>
+                  {driftSeverityLabel(executionContext.data.report.severity)}
+                </strong>。确认后会新增不可变快照和审计记录，再重新排入计划。
+              </p>
+              <p className="execution-context-fingerprint">
+                指纹：<code>{executionContext.data.report.fingerprint}</code>
+              </p>
+              <div className="execution-context-differences">
+                {executionContext.data.report.differences.map((difference) => (
+                  <article key={`${difference.field}-${difference.reason}`}>
+                    <header>
+                      <strong>{difference.field}</strong>
+                      <span>{driftSeverityLabel(difference.severity)}</span>
+                    </header>
+                    <p>{difference.reason}</p>
+                    <dl>
+                      <div>
+                        <dt>计划时</dt>
+                        <dd>
+                          <code>{driftValue(difference.baselineValue)}</code>
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>当前</dt>
+                        <dd>
+                          <code>{driftValue(difference.currentValue)}</code>
+                        </dd>
+                      </div>
+                    </dl>
+                  </article>
+                ))}
+              </div>
+
+              {executionContext.data.report.severity ===
+                "needs_confirmation" &&
+              executionContext.data.baselineSnapshotId ? (
+                <>
+                  <label className="grow">
+                    接受原因
+                    <textarea
+                      value={driftReason}
+                      onChange={(event) => setDriftReason(event.target.value)}
+                      placeholder="例如：已确认当前分支和工作区改动就是本次任务的目标。"
+                      disabled={acceptExecutionContext.isPending}
+                    />
+                  </label>
+                  {acceptExecutionContext.isError && (
+                    <div className="form-error" role="alert">
+                      确认或重新运行失败：{acceptExecutionContext.error.message}
+                    </div>
+                  )}
+                  <div className="modal-actions">
+                    <button
+                      type="button"
+                      className="button secondary"
+                      onClick={() => {
+                        setDriftTarget(null);
+                        setDriftReason("");
+                      }}
+                      disabled={acceptExecutionContext.isPending}
+                    >
+                      取消
+                    </button>
+                    <button
+                      type="button"
+                      className="button primary"
+                      onClick={() => acceptExecutionContext.mutate(driftTarget)}
+                      disabled={
+                        acceptExecutionContext.isPending || !driftReason.trim()
+                      }
+                    >
+                      {acceptExecutionContext.isPending
+                        ? "正在确认并重新加入队列…"
+                        : "确认当前上下文并运行"}
+                    </button>
+                  </div>
+                </>
+              ) : (
+                <div className="form-error" role="alert">
+                  该变化不能直接接受。请按差异说明修复工作区或重新生成计划。
+                </div>
+              )}
+            </section>
+          ) : null}
+        </Modal>
       )}
       {diffTarget && (
         <Modal
