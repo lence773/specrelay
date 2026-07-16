@@ -234,7 +234,17 @@ export function App() {
               ))}
             </nav>
           ) : (
-            <strong className="topbar-title">SpecRelay</strong>
+            <div className="empty-topbar-actions">
+              <strong className="topbar-title">SpecRelay</strong>
+              <button
+                type="button"
+                className={`empty-settings-button ${tab === "settings" ? "active" : ""}`}
+                onClick={() => setTab("settings")}
+              >
+                <SettingsIcon />
+                <span>数据连接</span>
+              </button>
+            </div>
           )}
           <div
             className="titlebar-drag-region"
@@ -307,6 +317,8 @@ export function App() {
             )}
             {tab === "settings" && <SettingsView project={project} />}
           </div>
+        ) : tab === "settings" ? (
+          <div className="content"><SettingsView /></div>
         ) : (
           <div className="welcome">
             <Empty

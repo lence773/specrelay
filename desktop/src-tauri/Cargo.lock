@@ -2819,6 +2819,7 @@ dependencies = [
 name = "specrelay-desktop"
 version = "1.0.17"
 dependencies = [
+ "percent-encoding",
  "serde",
  "serde_json",
  "tauri",

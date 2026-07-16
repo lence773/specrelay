@@ -50,6 +50,7 @@
       input, select { width: 100%; min-width: 0; height: 42px; padding: 0 12px; border: 1px solid #374149; border-radius: 9px; outline: none; background: #0e1216; color: #eef3f5; font: inherit; font-size: 14px; }
       input:focus, select:focus { border-color: #6fc89b; box-shadow: 0 0 0 3px #4ea97b2c; }
       .helper { margin: -8px 0 2px; color: #83909a; font-size: 12px; line-height: 1.55; }
+      .field-helper { color: #83909a; font-size: 11px; font-weight: 500; line-height: 1.45; }
       .submit { display: inline-flex; align-items: center; justify-content: center; min-height: 44px; border: 0; border-radius: 10px; background: #90e7bf; color: #112219; font-weight: 800; cursor: pointer; font-size: 14px; }
       .submit:hover { background: #afeecf; }
       .submit:disabled { cursor: wait; opacity: .68; }
@@ -74,10 +75,10 @@
     <div class="page">
       <main class="card">
         <section class="setup show" id="setup">
-          <p class="eyebrow">首次启动设置</p>
-          <h1>连接您的 PostgreSQL 数据库</h1>
-          <p class="lead">SpecRelay 桌面端不会安装、携带或启动数据库。请填写一个由您管理且当前可访问的 PostgreSQL 数据库连接。</p>
-          <div class="notice">保存后会启动本机后端服务。若数据库尚未初始化，服务会自动创建数据表并执行迁移；不会删除已有数据。</div>
+          <p class="eyebrow" id="setup-eyebrow">首次启动设置</p>
+          <h1 id="setup-title">连接您的 PostgreSQL 数据库</h1>
+          <p class="lead" id="setup-lead">SpecRelay 桌面端不会安装、携带或启动数据库。请填写一个由您管理且当前可访问的 PostgreSQL 数据库连接。</p>
+          <div class="notice" id="setup-notice">保存后会启动本机后端服务。若数据库尚未初始化，服务会自动创建数据表并执行迁移；不会删除已有数据。</div>
           <form id="database-form">
             <div class="field-grid">
               <label>数据库主机<input id="host" name="host" value="127.0.0.1" autocomplete="off" required /></label>
@@ -85,7 +86,7 @@
             </div>
             <label>数据库名称<input id="database" name="database" value="specrelay" autocomplete="off" required /></label>
             <label>用户名<input id="username" name="username" value="specrelay" autocomplete="username" required /></label>
-            <label>密码<input id="password" name="password" type="password" autocomplete="current-password" /></label>
+            <label>密码<input id="password" name="password" type="password" autocomplete="current-password" /><small class="field-helper" id="password-helper">请填写数据库密码；密码不会在此页面回显。</small></label>
             <label>SSL 模式
               <select id="sslMode" name="sslMode">
                 <option value="disable">不使用 SSL（本机开发常用）</option>

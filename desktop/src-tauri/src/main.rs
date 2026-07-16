@@ -16,12 +16,13 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, Ordering},
-        Mutex,
+        Arc, Mutex,
     },
     thread,
     time::Duration,
 };
 
+use percent_encoding::percent_decode_str;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, RunEvent, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 use tauri_plugin_shell::{
@@ -31,7 +32,6 @@ use tauri_plugin_shell::{
 use url::Url;
 use uuid::Uuid;
 
-const STARTUP_ATTEMPTS: usize = 120;
 const STARTUP_INTERVAL: Duration = Duration::from_millis(500);
 const SHUTDOWN_ATTEMPTS: usize = 100;
 const SHUTDOWN_INTERVAL: Duration = Duration::from_millis(250);
@@ -45,6 +45,24 @@ struct RunningBackend {
 struct BackendState {
     process: Mutex<Option<RunningBackend>>,
     exit_in_progress: AtomicBool,
+}
+
+/// Startup must wait for an external PostgreSQL migration without an arbitrary
+/// deadline. The sidecar event stream lets the desktop distinguish a real
+/// startup failure from a slow but healthy schema upgrade.
+#[derive(Default)]
+struct BackendStartupDiagnostics {
+    terminated: AtomicBool,
+    migration_failed: AtomicBool,
+    database_unavailable: AtomicBool,
+}
+
+#[derive(Debug, Deserialize)]
+struct BackendMigrationLog {
+    msg: Option<String>,
+    migration_event: Option<String>,
+    migration_version: Option<i64>,
+    migration_name: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -65,6 +83,18 @@ struct DatabaseConnectionInput {
     ssl_mode: String,
 }
 
+/// Non-sensitive connection fields returned to the packaged bootstrap page.
+/// The password is deliberately never sent back to the webview.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DatabaseConnectionSummary {
+    host: String,
+    port: u16,
+    database: String,
+    username: String,
+    ssl_mode: String,
+}
+
 fn main() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
@@ -74,6 +104,8 @@ fn main() {
         })
         .invoke_handler(tauri::generate_handler![
             configure_database,
+            get_database_connection,
+            open_database_configuration,
             minimize_window,
             toggle_maximize_window,
             close_window,
@@ -93,7 +125,7 @@ fn main() {
                     let _ = show_loading(
                         &window,
                         "正在连接已保存的 PostgreSQL 数据库…",
-                        "连接成功后会自动检查并初始化所需的数据表。",
+                        "连接成功后会验证数据库迁移；如有新版本表结构，会先安全升级再启动服务。",
                     );
                     if let Err(error) = start_backend(&app.handle(), &window, &runtime) {
                         eprintln!("SpecRelay startup failed: {error}");
@@ -136,19 +168,44 @@ fn configure_database(
     let runtime = RuntimeConfig {
         database_url: build_database_url(input)?,
     };
+    // Keep the exact previous configuration if a new connection cannot start.
+    // This makes a failed edit recoverable after restarting the desktop app.
+    let previous_runtime_config = read_runtime_config_snapshot(&app)?;
     save_runtime_config(&app, &runtime)?;
     show_loading(
         &window,
         "正在连接 PostgreSQL…",
-        "首次连接时，SpecRelay 会自动创建所需的数据表并执行数据库迁移。",
+        "连接成功后会检查数据库结构；如有新版本迁移，会先安全升级再启动服务。",
     )
     .map_err(|error| format!("无法更新启动界面：{error}"))?;
 
     if let Err(error) = start_backend(&app, &window, &runtime) {
+        let _ = restore_runtime_config(&app, previous_runtime_config);
         let _ = show_database_setup_error(&window, &error);
         return Err(error);
     }
     Ok(())
+}
+
+#[tauri::command]
+fn get_database_connection(app: AppHandle) -> Result<Option<DatabaseConnectionSummary>, String> {
+    load_runtime_config(&app)?
+        .map(database_connection_summary)
+        .transpose()
+}
+
+#[tauri::command]
+fn open_database_configuration(app: AppHandle, window: WebviewWindow) -> Result<(), String> {
+    show_database_reconfiguration_status(&window)
+        .map_err(|error| format!("无法显示数据库设置状态：{error}"))?;
+    // Let the current page paint the safety message before stopping the local
+    // sidecar. Only this desktop instance's backend is stopped; PostgreSQL and
+    // any Docker containers are never touched.
+    thread::sleep(Duration::from_millis(80));
+    graceful_stop_backend(&app);
+    window
+        .eval("window.location.replace('tauri://localhost/index.html?mode=reconfigure');")
+        .map_err(|error| format!("无法打开数据库连接设置：{error}"))
 }
 
 #[tauri::command]
@@ -223,24 +280,37 @@ fn start_backend(
         .map_err(|error| format!("无法启动宿主机后端：{error}"))?;
 
     let (mut receiver, child) = backend;
+    let diagnostics = Arc::new(BackendStartupDiagnostics::default());
+    let output_diagnostics = Arc::clone(&diagnostics);
+    let output_window = window.clone();
     tauri::async_runtime::spawn(async move {
         while let Some(event) = receiver.recv().await {
             match event {
                 CommandEvent::Stdout(line) => {
-                    eprintln!("[specrelay] {}", String::from_utf8_lossy(&line))
+                    let line = String::from_utf8_lossy(&line);
+                    eprintln!("[specrelay] {line}");
+                    record_startup_output(&output_diagnostics, &line);
                 }
                 CommandEvent::Stderr(line) => {
-                    eprintln!("[specrelay] {}", String::from_utf8_lossy(&line))
+                    let line = String::from_utf8_lossy(&line);
+                    eprintln!("[specrelay] {line}");
+                    record_startup_output(&output_diagnostics, &line);
+                    update_database_migration_loading(&output_window, &line);
                 }
-                CommandEvent::Error(error) => eprintln!("[specrelay] sidecar error: {error}"),
-                CommandEvent::Terminated(payload) => eprintln!("[specrelay] stopped: {payload:?}"),
+                CommandEvent::Error(error) => {
+                    eprintln!("[specrelay] sidecar error: {error}");
+                }
+                CommandEvent::Terminated(payload) => {
+                    output_diagnostics.terminated.store(true, Ordering::SeqCst);
+                    eprintln!("[specrelay] stopped: {payload:?}");
+                }
                 _ => {}
             }
         }
     });
     set_backend(app, child, api_port, shutdown_token)?;
 
-    if let Err(error) = wait_for_backend(api_port) {
+    if let Err(error) = wait_for_backend(api_port, &diagnostics) {
         graceful_stop_backend(app);
         return Err(error);
     }
@@ -354,6 +424,69 @@ fn save_runtime_config(app: &AppHandle, runtime: &RuntimeConfig) -> Result<(), S
     Ok(())
 }
 
+fn read_runtime_config_snapshot(app: &AppHandle) -> Result<Option<Vec<u8>>, String> {
+    let config_path = runtime_config_path(app)?;
+    if !config_path.exists() {
+        return Ok(None);
+    }
+    fs::read(&config_path)
+        .map(Some)
+        .map_err(|error| format!("无法备份当前数据库连接配置：{error}"))
+}
+
+fn restore_runtime_config(app: &AppHandle, previous: Option<Vec<u8>>) -> Result<(), String> {
+    let config_path = runtime_config_path(app)?;
+    match previous {
+        Some(raw) => {
+            fs::write(&config_path, raw)
+                .map_err(|error| format!("无法回滚数据库连接配置：{error}"))?;
+            restrict_permissions(&config_path);
+            Ok(())
+        }
+        None => {
+            if config_path.exists() {
+                fs::remove_file(&config_path)
+                    .map_err(|error| format!("无法回滚数据库连接配置：{error}"))?;
+            }
+            Ok(())
+        }
+    }
+}
+
+fn database_connection_summary(
+    runtime: RuntimeConfig,
+) -> Result<DatabaseConnectionSummary, String> {
+    let url = Url::parse(&runtime.database_url)
+        .map_err(|error| format!("保存的 PostgreSQL 连接地址无效：{error}"))?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| "保存的数据库连接缺少主机地址。".to_string())?
+        .to_string();
+    let database = decode_database_component(url.path().trim_start_matches('/'), "数据库名称")?;
+    let username = decode_database_component(url.username(), "用户名")?;
+    if database.is_empty() || username.is_empty() {
+        return Err("保存的数据库连接缺少数据库名称或用户名。".into());
+    }
+    Ok(DatabaseConnectionSummary {
+        host,
+        port: url.port().unwrap_or(5432),
+        database,
+        username,
+        ssl_mode: url
+            .query_pairs()
+            .find(|(key, _)| key == "sslmode")
+            .map(|(_, value)| value.into_owned())
+            .unwrap_or_else(|| "disable".to_string()),
+    })
+}
+
+fn decode_database_component(value: &str, label: &str) -> Result<String, String> {
+    percent_decode_str(value)
+        .decode_utf8()
+        .map(|value| value.into_owned())
+        .map_err(|_| format!("保存的数据库连接中的{label}不是有效的 UTF-8 文本。"))
+}
+
 fn runtime_config_path(app: &AppHandle) -> Result<PathBuf, String> {
     let app_data_dir = app
         .path()
@@ -442,14 +575,85 @@ fn available_loopback_port() -> Result<u16, String> {
         .map_err(|error| format!("无法读取本机端口：{error}"))
 }
 
-fn wait_for_backend(port: u16) -> Result<(), String> {
-    for _ in 0..STARTUP_ATTEMPTS {
+fn wait_for_backend(port: u16, diagnostics: &BackendStartupDiagnostics) -> Result<(), String> {
+    loop {
         if backend_is_ready(port) {
             return Ok(());
         }
+        if diagnostics.terminated.load(Ordering::SeqCst) {
+            return Err(startup_failure_message(diagnostics));
+        }
         thread::sleep(STARTUP_INTERVAL);
     }
-    Err("等待后端就绪超时。请确认 PostgreSQL 连接信息正确且数据库可访问，然后重试。".into())
+}
+
+fn record_startup_output(diagnostics: &BackendStartupDiagnostics, line: &str) {
+    let lower = line.to_ascii_lowercase();
+    if lower.contains("migration integrity check failed")
+        || lower.contains("apply migration ")
+        || lower.contains("commit migration ")
+        || lower.contains("prepare schema migration integrity metadata")
+    {
+        diagnostics.migration_failed.store(true, Ordering::SeqCst);
+    }
+    if lower.contains("database ping:")
+        || lower.contains("failed to connect")
+        || lower.contains("connection refused")
+        || lower.contains("password authentication failed")
+    {
+        diagnostics
+            .database_unavailable
+            .store(true, Ordering::SeqCst);
+    }
+}
+
+fn startup_failure_message(diagnostics: &BackendStartupDiagnostics) -> String {
+    if diagnostics.migration_failed.load(Ordering::SeqCst) {
+        return "数据库结构升级失败，应用未启动且本次迁移已回滚。请检查 PostgreSQL 权限、数据库空间及迁移文件完整性；修复后重新打开应用即可重试。".into();
+    }
+    if diagnostics.database_unavailable.load(Ordering::SeqCst) {
+        return "无法连接 PostgreSQL 数据库。请检查数据库服务、网络、账号密码及 SSL 设置后重试。"
+            .into();
+    }
+    "本机后端在启动完成前退出。请检查 PostgreSQL 连接和桌面端后端日志后重试。".into()
+}
+
+fn update_database_migration_loading(window: &WebviewWindow, line: &str) {
+    let Ok(event) = serde_json::from_str::<BackendMigrationLog>(line.trim()) else {
+        return;
+    };
+    if event.msg.as_deref() != Some("database migration") {
+        return;
+    }
+    let (title, detail) = match event.migration_event.as_deref() {
+        Some("waiting_for_lock") => (
+            "正在等待数据库更新锁…",
+            "另一台 SpecRelay 可能正在更新同一个数据库。为避免重复修改表结构，当前应用会安全等待。",
+        ),
+        Some("verifying") => (
+            "正在检查数据库结构…",
+            "正在验证已应用的数据库迁移并检查是否需要升级。",
+        ),
+        Some("applying") => {
+            let version = event
+                .migration_version
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "新的".into());
+            let name = event.migration_name.as_deref().unwrap_or("数据库迁移");
+            let detail = format!(
+                "正在应用数据库更新 {version}（{name}）。请保持应用打开，不会删除现有数据。"
+            );
+            let _ = show_loading(window, "正在升级数据库结构…", &detail);
+            return;
+        }
+        Some("applied") => ("数据库结构已更新…", "正在继续检查其余更新并恢复本机服务。"),
+        Some("complete") => (
+            "数据库检查完成…",
+            "正在启动本机服务并恢复已保存的任务状态。",
+        ),
+        _ => return,
+    };
+    let _ = show_loading(window, title, detail);
 }
 
 fn backend_is_ready(port: u16) -> bool {
@@ -498,6 +702,28 @@ fn show_database_setup_error(window: &WebviewWindow, error: &str) -> tauri::Resu
         json_string(error),
         json_string(error),
     ))
+}
+
+fn show_database_reconfiguration_status(window: &WebviewWindow) -> tauri::Result<()> {
+    // The hosted React UI and the packaged bootstrap page have different DOMs.
+    // A self-contained overlay works for either page while the existing backend
+    // performs its orderly shutdown and persists task state.
+    window.eval(
+        r#"(() => {
+          const id = '__specrelay_database_reconfiguration__';
+          if (document.getElementById(id)) return;
+          const overlay = document.createElement('div');
+          overlay.id = id;
+          overlay.setAttribute('role', 'status');
+          overlay.setAttribute('aria-live', 'assertive');
+          overlay.style.cssText = 'position:fixed;inset:0;z-index:2147483647;display:flex;align-items:center;justify-content:center;padding:24px;background:rgba(8,12,15,.94);color:#f2f7f4;font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;';
+          overlay.innerHTML = '<div style="max-width:460px;text-align:center"><div style="width:34px;height:34px;margin:0 auto 18px;border:3px solid #466052;border-top-color:#9be6bf;border-radius:50%;animation:specrelay-db-reconfigure .8s linear infinite"></div><div style="font-size:19px;font-weight:700">正在切换数据库连接设置…</div><div style="margin-top:10px;color:#b8c8bf;font-size:14px;line-height:1.65">正在安全停止本桌面端启动的后端与 CLI 任务，并保存当前执行状态。不会停止或修改 PostgreSQL / Docker 数据库。</div></div>';
+          const style = document.createElement('style');
+          style.textContent = '@keyframes specrelay-db-reconfigure{to{transform:rotate(360deg)}}';
+          document.head.appendChild(style);
+          document.documentElement.appendChild(overlay);
+        })();"#,
+    )
 }
 
 fn json_string(value: &str) -> String {

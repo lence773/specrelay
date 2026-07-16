@@ -65,7 +65,13 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("database ping: %w", err)
 	}
-	if err = migrations.Run(runtimeCtx, pool); err != nil {
+	if err = migrations.RunWithObserver(runtimeCtx, pool, func(event migrations.Event) {
+		logger.Info("database migration",
+			"migration_event", event.Stage,
+			"migration_version", event.Version,
+			"migration_name", event.Name,
+		)
+	}); err != nil {
 		return err
 	}
 
