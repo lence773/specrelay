@@ -518,17 +518,24 @@ NODE
 
 if [[ "$official_release" != true ]]; then
   cat > "$bundle_dir/UNOFFICIAL-BUILD.txt" <<EOF_MARKER
-SpecRelay $version unofficial local/CI build
+SpecRelay $version unsigned build
 
-This directory is not an official GitHub Release. Do not redistribute these files as official artifacts.
 Platform code signing status: $code_signing_status
 Updater signing status: $updater_signing_status
 Target: $target_triple
 Commit: ${commit_sha:-unknown}
 
 When credentials are absent, installers are intentionally unsigned and updater artifacts are disabled.
-Use an official Release plus release-manifest.json.sig and SHA256SUMS for distribution.
 EOF_MARKER
+  if [[ -n "${SPECRELAY_RELEASE_TAG:-}" ]]; then
+    cat >> "$bundle_dir/UNOFFICIAL-BUILD.txt" <<'EOF_RELEASE_CONTEXT'
+This tagged build may be published as an explicitly unsigned GitHub Release for direct/manual installation only. Verify SHA256SUMS before installing; automatic updates are disabled.
+EOF_RELEASE_CONTEXT
+  else
+    cat >> "$bundle_dir/UNOFFICIAL-BUILD.txt" <<'EOF_LOCAL_CONTEXT'
+This directory is not an official GitHub Release. Do not redistribute these files as official artifacts.
+EOF_LOCAL_CONTEXT
+  fi
   printf '\nWARNING: produced an UNOFFICIAL build (%s; updater: %s).\n' \
     "$code_signing_status" "$updater_signing_status" >&2
 fi

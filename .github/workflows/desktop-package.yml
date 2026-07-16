@@ -15,6 +15,7 @@ jobs:
     runs-on: ubuntu-24.04
     outputs:
       publish_release: ${{ steps.metadata.outputs.publish_release }}
+      official_release: ${{ steps.metadata.outputs.official_release }}
       release_tag: ${{ steps.metadata.outputs.release_tag }}
       version: ${{ steps.metadata.outputs.version }}
     steps:
@@ -44,13 +45,13 @@ jobs:
 
           release_tag=''
           publish_release=false
+          official_release=false
           if [[ "$EVENT_NAME" == 'push' && "$REF_TYPE" == 'tag' ]]; then
             release_tag="$REF_NAME"
-
-            # A tag is a signed release only when every required platform
-            # credential is present. This keeps credential-free projects from
-            # producing a red workflow: they receive unsigned test artifacts
-            # instead, and no GitHub Release or updater manifest is published.
+            # Every immutable release tag publishes installers. If formal signing
+            # credentials are unavailable, the published release is explicitly
+            # marked unsigned and does not expose updater artifacts.
+            publish_release=true
             release_credentials=(
               TAURI_SIGNING_PRIVATE_KEY
               TAURI_SIGNING_PRIVATE_KEY_PASSWORD
@@ -72,10 +73,10 @@ jobs:
             done
 
             if [[ "${#missing_credentials[@]}" -eq 0 ]]; then
-              publish_release=true
+              official_release=true
               echo 'All platform signing credentials are present; publishing a signed release.'
             else
-              echo "::notice::Tag $release_tag is running as an unsigned test build because formal signing credentials are incomplete."
+              echo "::notice::Tag $release_tag will publish an explicitly unsigned installer release because formal signing credentials are incomplete."
               printf 'Missing release credentials: %s\n' "${missing_credentials[*]}"
             fi
           fi
@@ -83,6 +84,7 @@ jobs:
           version="$(./scripts/package-desktop.sh --check-version-only "$release_tag")"
           {
             echo "publish_release=$publish_release"
+            echo "official_release=$official_release"
             echo "release_tag=$release_tag"
             echo "version=$version"
           } >> "$GITHUB_OUTPUT"
@@ -134,7 +136,7 @@ jobs:
       - name: Build and verify Linux desktop bundles
         env:
           SPECRELAY_RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
-          SPECRELAY_OFFICIAL_RELEASE: ${{ needs.validate.outputs.publish_release }}
+          SPECRELAY_OFFICIAL_RELEASE: ${{ needs.validate.outputs.official_release }}
           TAURI_BUNDLES: deb,appimage,rpm
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
@@ -228,7 +230,7 @@ jobs:
         shell: bash
         env:
           SPECRELAY_RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
-          SPECRELAY_OFFICIAL_RELEASE: ${{ needs.validate.outputs.publish_release }}
+          SPECRELAY_OFFICIAL_RELEASE: ${{ needs.validate.outputs.official_release }}
           TAURI_BUNDLES: nsis,msi
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
@@ -327,7 +329,7 @@ jobs:
       - name: Build, notarize, staple, and verify macOS Intel bundle
         env:
           SPECRELAY_RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
-          SPECRELAY_OFFICIAL_RELEASE: ${{ needs.validate.outputs.publish_release }}
+          SPECRELAY_OFFICIAL_RELEASE: ${{ needs.validate.outputs.official_release }}
           TAURI_BUNDLES: dmg
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
@@ -427,7 +429,7 @@ jobs:
       - name: Build, notarize, staple, and verify macOS Apple Silicon bundle
         env:
           SPECRELAY_RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
-          SPECRELAY_OFFICIAL_RELEASE: ${{ needs.validate.outputs.publish_release }}
+          SPECRELAY_OFFICIAL_RELEASE: ${{ needs.validate.outputs.official_release }}
           TAURI_BUNDLES: dmg
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
@@ -468,6 +470,7 @@ jobs:
     env:
       RELEASE_TAG: ${{ needs.validate.outputs.release_tag }}
       VERSION: ${{ needs.validate.outputs.version }}
+      OFFICIAL_RELEASE: ${{ needs.validate.outputs.official_release }}
       TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
       TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
       TAURI_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_UPDATER_PUBLIC_KEY }}
@@ -500,12 +503,14 @@ jobs:
               "$RELEASE_TAG" "$GITHUB_SHA" "$tag_sha" >&2
             exit 1
           fi
-          for variable in TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD TAURI_UPDATER_PUBLIC_KEY; do
-            if [[ -z "${!variable:-}" ]]; then
-              echo "Official release credential is empty: $variable" >&2
-              exit 1
-            fi
-          done
+          if [[ "$OFFICIAL_RELEASE" == 'true' ]]; then
+            for variable in TAURI_SIGNING_PRIVATE_KEY TAURI_SIGNING_PRIVATE_KEY_PASSWORD TAURI_UPDATER_PUBLIC_KEY; do
+              if [[ -z "${!variable:-}" ]]; then
+                echo "Official release credential is empty: $variable" >&2
+                exit 1
+              fi
+            done
+          fi
 
       - name: Download this run's desktop bundles
         uses: actions/download-artifact@v4
@@ -550,6 +555,105 @@ jobs:
             fi
             printf '%s\n' "${matches[0]}"
           }
+
+          if [[ "$OFFICIAL_RELEASE" != 'true' ]]; then
+            linux_dir="downloaded-assets/specrelay-$VERSION-linux-x64-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+            windows_dir="downloaded-assets/specrelay-$VERSION-windows-x64-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+            macos_x64_dir="downloaded-assets/specrelay-$VERSION-macos-x64-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+            macos_arm64_dir="downloaded-assets/specrelay-$VERSION-macos-arm64-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+            for artifact_dir in "$linux_dir" "$windows_dir" "$macos_x64_dir" "$macos_arm64_dir"; do
+              if [[ ! -d "$artifact_dir" ]]; then
+                echo "Required artifact was not downloaded: $artifact_dir" >&2
+                exit 1
+              fi
+              if ! find "$artifact_dir" -type f -name 'UNOFFICIAL-BUILD.txt' | grep -q .; then
+                echo "Unsigned release input is missing its unsigned-build marker: $artifact_dir" >&2
+                exit 1
+              fi
+            done
+
+            collect_one "$linux_dir" '*.deb' "SpecRelay-$VERSION-linux-x64-deb.deb"
+            collect_one "$linux_dir" '*.AppImage' "SpecRelay-$VERSION-linux-x64-appimage.AppImage"
+            collect_one "$linux_dir" '*.rpm' "SpecRelay-$VERSION-linux-x64-rpm.rpm"
+            collect_one "$windows_dir" '*.exe' "SpecRelay-$VERSION-windows-x64-nsis.exe"
+            collect_one "$windows_dir" '*.msi' "SpecRelay-$VERSION-windows-x64-msi.msi"
+            collect_one "$macos_x64_dir" '*.dmg' "SpecRelay-$VERSION-macos-x64-dmg.dmg"
+            collect_one "$macos_arm64_dir" '*.dmg' "SpecRelay-$VERSION-macos-arm64-dmg.dmg"
+            collect_one "$linux_dir" 'UNOFFICIAL-BUILD.txt' 'UNSIGNED-RELEASE-linux-x64.txt'
+            collect_one "$windows_dir" 'UNOFFICIAL-BUILD.txt' 'UNSIGNED-RELEASE-windows-x64.txt'
+            collect_one "$macos_x64_dir" 'UNOFFICIAL-BUILD.txt' 'UNSIGNED-RELEASE-macos-x64.txt'
+            collect_one "$macos_arm64_dir" 'UNOFFICIAL-BUILD.txt' 'UNSIGNED-RELEASE-macos-arm64.txt'
+
+            linux_metadata="$(find_one "$linux_dir" 'build-metadata-*.json')"
+            windows_metadata="$(find_one "$windows_dir" 'build-metadata-*.json')"
+            macos_x64_metadata="$(find_one "$macos_x64_dir" 'build-metadata-*.json')"
+            macos_arm64_metadata="$(find_one "$macos_arm64_dir" 'build-metadata-*.json')"
+            for metadata in "$linux_metadata" "$windows_metadata" "$macos_x64_metadata" "$macos_arm64_metadata"; do
+              jq -e --arg tag "$RELEASE_TAG" --arg sha "$GITHUB_SHA" '
+                .official_release == false and
+                .tag == $tag and
+                .commit_sha == $sha and
+                .updater_signing.status == "unsigned"
+              ' "$metadata" >/dev/null
+            done
+            jq -e '.code_signing.status == "not-available"' "$linux_metadata" >/dev/null
+            jq -e '.code_signing.status == "unsigned"' "$windows_metadata" >/dev/null
+            jq -e '.code_signing.status == "unsigned"' "$macos_x64_metadata" >/dev/null
+            jq -e '.code_signing.status == "unsigned"' "$macos_arm64_metadata" >/dev/null
+
+            jq -s \
+              --arg tag "$RELEASE_TAG" \
+              --arg version "$VERSION" \
+              --arg sha "$GITHUB_SHA" \
+              --arg repository "$REPOSITORY" \
+              --arg run_id "$GITHUB_RUN_ID" \
+              --arg run_url "$SERVER_URL/$REPOSITORY/actions/runs/$GITHUB_RUN_ID" \
+              --arg generated_at "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+              '{
+                schema_version: 1,
+                tag: $tag,
+                version: $version,
+                commit_sha: $sha,
+                repository: $repository,
+                github_actions: { run_id: $run_id, run_url: $run_url },
+                generated_at: $generated_at,
+                official_release: false,
+                builders: .
+              }' \
+              "$linux_metadata" "$windows_metadata" "$macos_x64_metadata" "$macos_arm64_metadata" \
+              > "$output_dir/build-metadata.json"
+
+            printf '%s\n\n%s\n' \
+              "SpecRelay $VERSION is an unsigned GitHub Release build." \
+              'Platform code-signing certificates and the Tauri updater signing key were not configured for this tag. The installers are published for direct/manual installation only; automatic updates are disabled. Verify the SHA256SUMS file before installing.' \
+              > "$output_dir/UNSIGNED-RELEASE.txt"
+
+            if ! gh api --method POST "repos/$REPOSITORY/releases/generate-notes" \
+              -f tag_name="$RELEASE_TAG" --jq '.body' > release-notes.generated.md; then
+              printf 'SpecRelay %s. See the commit history for this immutable tag.\n' "$VERSION" > release-notes.generated.md
+            fi
+            {
+              printf '## Unsigned installer release\n\n'
+              printf '> **Warning:** These installers are intentionally unsigned because release certificates and the Tauri updater key are not configured. They are for direct/manual installation only; automatic updates are disabled. Verify `SHA256SUMS` before installing.\n\n'
+              cat release-notes.generated.md
+            } > release-notes.md
+
+            (
+              cd "$output_dir"
+              LC_ALL=C find . -maxdepth 1 -type f ! -name SHA256SUMS -printf '%f\0' |
+                sort -z |
+                xargs -0 sha256sum > SHA256SUMS
+              sha256sum --check SHA256SUMS
+            )
+            mapfile -d '' assets < <(find "$output_dir" -maxdepth 1 -type f -print0)
+            if [[ "${#assets[@]}" -ne 14 ]]; then
+              printf 'Expected exactly 14 unsigned release assets, found %d.\n' "${#assets[@]}" >&2
+              exit 1
+            fi
+            printf 'Unsigned release assets for %s:\n' "$RELEASE_TAG"
+            printf '  %s\n' "${assets[@]}"
+            exit 0
+          fi
 
           linux_dir="downloaded-assets/specrelay-$VERSION-linux-x64-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
           windows_dir="downloaded-assets/specrelay-$VERSION-windows-x64-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
@@ -802,12 +906,16 @@ jobs:
           if [[ "$VERSION" == *-* ]]; then
             prerelease_args+=(--prerelease)
           fi
+          release_title="SpecRelay $VERSION"
+          if [[ "$OFFICIAL_RELEASE" != 'true' ]]; then
+            release_title+=" (unsigned)"
+          fi
           gh release create "$RELEASE_TAG" \
             --repo "$GITHUB_REPOSITORY" \
             --verify-tag \
             --draft \
             --notes-file release-notes.md \
-            --title "SpecRelay $VERSION" \
+            --title "$release_title" \
             "${prerelease_args[@]}"
           echo 'created=true' >> "$GITHUB_OUTPUT"
 
