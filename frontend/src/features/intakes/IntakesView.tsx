@@ -9,6 +9,7 @@ import type {
   RequirementDiscussionMessage,
 } from "../../api/types";
 import { Plus, Upload } from "../../components/Icons";
+import { ThemedSelect } from "../../components/ThemedSelect";
 import {
   FeedbackComposer,
   FeedbackDetailPanel,
@@ -577,21 +578,19 @@ export function IntakesView({
                 </p>
                 <label>
                   <span>目标需求</span>
-                  <select
+                  <ThemedSelect
+                    ariaLabel="目标需求"
                     value={feedbackParentID}
-                    onChange={(event) =>
-                      setFeedbackParentID(event.target.value)
-                    }
-                    required
+                    onChange={setFeedbackParentID}
                     disabled={create.isPending}
-                  >
-                    <option value="">请选择需要反馈的需求…</option>
-                    {requirements.map((requirement) => (
-                      <option key={requirement.id} value={requirement.id}>
-                        {requirement.title}
-                      </option>
-                    ))}
-                  </select>
+                    options={[
+                      { value: "", label: "请选择需要反馈的需求…" },
+                      ...requirements.map((requirement) => ({
+                        value: requirement.id,
+                        label: requirement.title,
+                      })),
+                    ]}
+                  />
                 </label>
                 {requirements.length === 0 && (
                   <div className="form-error">

@@ -115,7 +115,7 @@ fn main() {
                 WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
                     .title("SpecRelay")
                     .decorations(false)
-                    .inner_size(1360.0, 860.0)
+                    .inner_size(1920.0, 1080.0)
                     .min_inner_size(980.0, 680.0)
                     .center()
                     .build()?;

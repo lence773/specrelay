@@ -499,9 +499,8 @@ describe("IntakesView tab cache", () => {
     expect(screen.getByText("关联已有需求")).toBeInTheDocument();
     expect(submit).toBeDisabled();
 
-    fireEvent.change(screen.getByLabelText("目标需求"), {
-      target: { value: requirement.id },
-    });
+    fireEvent.click(screen.getByRole("combobox", { name: "目标需求" }));
+    fireEvent.click(screen.getByRole("option", { name: requirement.title }));
     fireEvent.change(screen.getByPlaceholderText("希望调整什么？"), {
       target: { value: "新的反馈" },
     });

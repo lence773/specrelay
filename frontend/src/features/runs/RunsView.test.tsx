@@ -92,8 +92,10 @@ describe('RunsView observability regressions',()=>{
     await waitFor(()=>expect(log).toHaveBeenCalledWith('55555555-5555-4555-8555-555555555555',undefined,50))
     expect(screen.getByText('latest event 50')).toBeInTheDocument()
 
-    fireEvent.change(screen.getByLabelText('Provider'),{target:{value:'claude'}})
-    fireEvent.change(screen.getByLabelText('计划'),{target:{value:plan.id}})
+    fireEvent.click(screen.getByRole('combobox',{name:'Provider'}))
+    fireEvent.click(screen.getByRole('option',{name:'Claude CLI'}))
+    fireEvent.click(screen.getByRole('combobox',{name:'计划'}))
+    fireEvent.click(screen.getByRole('option',{name:plan.title}))
     await waitFor(()=>{
       const latest=observability.mock.calls.at(-1)
       expect(latest?.[0]).toBe(project.id)

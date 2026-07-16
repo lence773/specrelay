@@ -10,6 +10,7 @@ import type {
   Project,
 } from '../../api/types'
 import { Activity } from '../../components/Icons'
+import { ThemedSelect } from '../../components/ThemedSelect'
 import { Empty } from '../../components/Status'
 import { buildUsageTrend, parseTerminalLines, runSessionBadges } from './terminal'
 
@@ -165,8 +166,8 @@ export function RunsView({project,plans}:{project:Project;plans:Plan[]}){
 
     <section className="run-filter-panel panel" aria-label="运行筛选器">
       <div className="run-filter-group"><span>时间范围</span><div className="run-filter-chips">{rangeOptions.map(([value,label])=><button type="button" key={value} className={range===value?'active':''} onClick={()=>chooseRange(value)}>{label}</button>)}</div></div>
-      <label><span>Provider</span><select value={provider} onChange={event=>setProvider(event.target.value as ''|AgentRunProvider)}><option value="">全部 Provider</option><option value="codex">Codex CLI</option><option value="claude">Claude CLI</option><option value="validation">最终验证</option></select></label>
-      <label><span>计划</span><select value={planId} onChange={event=>setPlanId(event.target.value)}><option value="">全部计划</option>{plans.map(plan=><option key={plan.id} value={plan.id}>{plan.title}</option>)}</select></label>
+      <label><span>Provider</span><ThemedSelect ariaLabel="Provider" value={provider} onChange={value=>setProvider(value as ''|AgentRunProvider)} options={[{value:'',label:'全部 Provider'},{value:'codex',label:'Codex CLI'},{value:'claude',label:'Claude CLI'},{value:'validation',label:'最终验证'}]}/></label>
+      <label><span>计划</span><ThemedSelect ariaLabel="计划" value={planId} onChange={setPlanId} options={[{value:'',label:'全部计划'},...plans.map(plan=>({value:plan.id,label:plan.title}))]}/></label>
       <div className="run-filter-coverage"><span>数据覆盖范围</span><strong>{filterRangeLabel} · {actualRange}</strong><small>{data?`指标 ${data.pagination.totalItems} 次调用；列表 ${items.length}/${data.pagination.totalItems}`:'正在读取结构化运行摘要'}</small></div>
     </section>
 

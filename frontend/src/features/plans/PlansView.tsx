@@ -44,25 +44,16 @@ function ExecutionProviderSelector({
   value,
   onChange,
   disabled = false,
-  compact = false,
 }: {
   label: string;
   value: ProviderChoice;
   onChange: (provider: ProviderChoice) => void;
   disabled?: boolean;
-  compact?: boolean;
 }) {
   return (
-    <fieldset
-      className={`execution-provider-selector${compact ? " compact" : ""}`}
-      disabled={disabled}
-    >
+    <fieldset className="cli-provider-selector" disabled={disabled}>
       <legend>{label}</legend>
-      <div
-        className="execution-provider-options"
-        role="group"
-        aria-label={label}
-      >
+      <div className="cli-provider-options" role="group" aria-label={label}>
         {providerOptions.map((option) => (
           <button
             type="button"
@@ -530,7 +521,6 @@ export function PlansView({
                         {canRunTask && (
                           <div className="task-execution-panel">
                             <ExecutionProviderSelector
-                              compact
                               label={`${task.taskKey} 本次执行提供方`}
                               value={provider}
                               onChange={(value) =>

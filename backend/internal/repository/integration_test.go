@@ -2099,6 +2099,77 @@ func TestClaimJobKeepsStartedPlanTasksContiguous(t *testing.T) {
 	}
 }
 
+func TestClaimJobDoesNotInterleavePlansWhileTaskIsInFlight(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	project, err := store.CreateProject(ctx, CreateProjectParams{Name: "In-flight plan ownership", WorkspacePath: "/tmp/in-flight-plan-ownership", NormalizedWorkspace: "/tmp/in-flight-plan-ownership"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err = store.SetAutomation(ctx, project.ID, true, project.Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	createReadyPlan := func(title string) (domain.Plan, []domain.PlanTask) {
+		t.Helper()
+		intake, generationJob, createErr := store.CreateIntake(ctx, CreateIntakeParams{ProjectID: project.ID, Kind: "requirement", Title: title, Body: "Keep task execution single-flight per project", ConfigSnapshot: json.RawMessage(`{}`), QueuePlan: true})
+		if createErr != nil {
+			t.Fatal(createErr)
+		}
+		if generationJob == nil {
+			t.Fatal("expected plan generation job")
+		}
+		if _, execErr := store.Pool.Exec(ctx, `UPDATE jobs SET status='cancelled' WHERE id=$1`, generationJob.ID); execErr != nil {
+			t.Fatal(execErr)
+		}
+		plan, tasks, saveErr := store.SaveGeneratedPlan(ctx, intake, planspec.Spec{
+			Title:   title,
+			Summary: "Verify a project never leases tasks from two plans at once",
+			Tasks: []planspec.Task{
+				{Title: "Implementation", Scope: []string{"implementation"}, Acceptance: []string{"done"}},
+			},
+			FinalValidation: []string{"validate"},
+		}, title)
+		if saveErr != nil {
+			t.Fatal(saveErr)
+		}
+		return plan, tasks
+	}
+
+	planA, tasksA := createReadyPlan("Plan A")
+	planB, tasksB := createReadyPlan("Plan B")
+	firstA, err := store.QueuePlan(ctx, planA.ID, planA.Version)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.QueuePlan(ctx, planB.ID, planB.Version); err != nil {
+		t.Fatal(err)
+	}
+
+	claimed, err := store.ClaimJob(ctx, "first-worker", time.Minute)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if claimed.ID != firstA.ID || claimed.AggregateID != tasksA[0].ID {
+		t.Fatalf("first claimed job=%s task=%s, want Plan A job=%s task=%s", claimed.ID, claimed.AggregateID, firstA.ID, tasksA[0].ID)
+	}
+
+	// A second worker must not lease Plan B while Plan A's task is merely
+	// leased (the small interval before it becomes running) nor after it is
+	// running. This is the boundary that previously allowed plans to appear to
+	// alternate when multiple workers woke up together.
+	if _, err = store.ClaimJob(ctx, "second-worker", time.Minute); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("claim while Plan A task is leased error=%v, want no job; Plan B task=%s", err, tasksB[0].ID)
+	}
+	if _, err = store.MarkJobRunning(ctx, claimed.ID, "first-worker"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = store.ClaimJob(ctx, "second-worker", time.Minute); !errors.Is(err, pgx.ErrNoRows) {
+		t.Fatalf("claim while Plan A task is running error=%v, want no job; Plan B task=%s", err, tasksB[0].ID)
+	}
+}
+
 func TestFinishTaskDoesNotSkipEarlierUnfinishedTask(t *testing.T) {
 	store := testStore(t)
 	ctx := context.Background()

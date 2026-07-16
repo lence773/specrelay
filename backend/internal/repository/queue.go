@@ -39,22 +39,42 @@ func (s *Store) ClaimJob(ctx context.Context, workerID string, lease time.Durati
 			AND p.automation_enabled=true
 			AND (
 				j.job_type<>'task.execute'
-				OR task.plan_id=(
-					SELECT owner.id
-					FROM plans owner
-					WHERE owner.project_id=j.project_id
-						AND owner.status IN ('running','validating')
-						AND owner.is_executable=true
-						AND EXISTS (
-							SELECT 1 FROM plan_tasks owner_task
-							WHERE owner_task.plan_id=owner.id AND owner_task.status<>'succeeded'
-						)
-					ORDER BY owner.execution_started_at ASC NULLS LAST,owner.created_at ASC,owner.id ASC
-					LIMIT 1
+				OR (
+					-- A project can have only one task job in flight. The plan
+					-- selector below determines which plan owns the next turn;
+					-- this guard makes that rule durable between claiming a job
+					-- and changing its task state to running. Without it, two
+					-- workers can briefly lease jobs from different plans and
+					-- make the UI appear to alternate plans. Plan-generation jobs
+					-- intentionally remain eligible during a task execution.
+					NOT EXISTS (
+						SELECT 1
+						FROM jobs active_task_job
+						WHERE active_task_job.project_id=j.project_id
+							AND active_task_job.job_type='task.execute'
+							AND active_task_job.status IN ('leased','running')
+					)
+					AND task.plan_id=(
+						SELECT owner.id
+						FROM plans owner
+						WHERE owner.project_id=j.project_id
+							AND owner.status IN ('running','validating')
+							AND owner.is_executable=true
+							AND EXISTS (
+								SELECT 1 FROM plan_tasks owner_task
+								WHERE owner_task.plan_id=owner.id AND owner_task.status<>'succeeded'
+							)
+						ORDER BY owner.execution_started_at ASC NULLS LAST,owner.created_at ASC,owner.id ASC
+						LIMIT 1
+					)
 				)
 			)
 		ORDER BY j.priority ASC,j.created_at ASC
-		FOR UPDATE OF j SKIP LOCKED
+		-- Lock the project row together with the job row. A second worker
+		-- skips every candidate from this project until this claim commits,
+		-- then observes the leased task-job guard above. Other projects are
+		-- unaffected and can still make progress concurrently.
+		FOR UPDATE OF p,j SKIP LOCKED
 		LIMIT 1`).Scan(&id)
 	if err != nil {
 		return domain.Job{}, err
