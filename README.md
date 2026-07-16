@@ -24,7 +24,7 @@ The desktop app does not put a CLI in a container and does not upload project fo
 
 ### GitHub Actions build
 
-Run the **Desktop package** workflow manually in GitHub Actions to create downloadable build artifacts for every platform. Pushing a version tag such as `v1.0.0` runs the same native builds and publishes all generated installers to a GitHub Release.
+Run the **Desktop package** workflow manually in GitHub Actions to create downloadable build artifacts for every platform. Pushing a version tag such as `v1.0.0` runs the same native builds: when every Windows, macOS, and Tauri updater signing credential is configured, it publishes a GitHub Release; otherwise the tag automatically falls back to an unsigned test build, uploads Actions Artifacts marked with `UNOFFICIAL-BUILD.txt`, and does not create a GitHub Release.
 
 | Target | Native runner | Outputs |
 | --- | --- | --- |
@@ -35,10 +35,10 @@ Run the **Desktop package** workflow manually in GitHub Actions to create downlo
 
 ### Release signing, notarization, and traceability
 
-A tag build is an **official release** and is fail-closed:
+A version-tag build becomes an **official release** only after every Windows, macOS, and Tauri updater credential is present. Otherwise it succeeds as an unsigned test build and never creates a GitHub Release. Once the credential gate is satisfied, the official release remains fail-closed:
 
-- Windows NSIS and MSI installers are Authenticode-signed with the trusted certificate imported from `WINDOWS_CERTIFICATE_BASE64`, timestamped with SHA-256, and checked with `Get-AuthenticodeSignature`. A missing/expired certificate, missing password, or non-`Valid` result stops the release.
-- The macOS `.app` and final `.dmg` use a Developer ID Application identity. The workflow submits them to Apple notarization, staples the tickets, and checks `codesign`, `spctl`, and `xcrun stapler validate` before upload. Missing Apple credentials or any failed assessment stops the release.
+- Windows NSIS and MSI installers are Authenticode-signed with the trusted certificate imported from `WINDOWS_CERTIFICATE_BASE64`, timestamped with SHA-256, and checked with `Get-AuthenticodeSignature`. An expired certificate, invalid password, or non-`Valid` result stops the release.
+- The macOS `.app` and final `.dmg` use a Developer ID Application identity. The workflow submits them to Apple notarization, staples the tickets, and checks `codesign`, `spctl`, and `xcrun stapler validate` before upload. Any signing or assessment failure stops the release.
 - Every updater-capable payload is independently signed with the Tauri updater key (`TAURI_SIGNING_PRIVATE_KEY`) and verified with the matching public key before publication. The packaged desktop receives only `TAURI_UPDATER_PUBLIC_KEY`; the private key, its password, PFX/P12 contents, certificate passwords, Apple ID app-specific password, and notarization credentials remain GitHub Actions secrets and are never written to the repository, release assets, or installer.
 
 Configure these GitHub Actions **secrets**: `TAURI_SIGNING_PRIVATE_KEY`, `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, `WINDOWS_CERTIFICATE_BASE64`, `WINDOWS_CERTIFICATE_PASSWORD`, `APPLE_CERTIFICATE`, `APPLE_CERTIFICATE_PASSWORD`, `APPLE_ID`, and `APPLE_PASSWORD`. Configure the non-secret repository **variables** `TAURI_UPDATER_PUBLIC_KEY`, `APPLE_SIGNING_IDENTITY`, and `APPLE_TEAM_ID`. Use an encrypted, dedicated Tauri updater private key that is separate from the Windows and Apple code-signing identities.
@@ -73,7 +73,7 @@ Get-FileHash .\SpecRelay-*-windows-x64-nsis.exe -Algorithm SHA256
 Get-AuthenticodeSignature .\SpecRelay-*-windows-x64-nsis.exe | Format-List Status, StatusMessage, SignerCertificate
 ```
 
-A local or manually dispatched build may run without credentials. In that case updater artifacts are disabled, platform installers are unsigned, the output directory contains `UNOFFICIAL-BUILD.txt`, and `build-metadata-*.json` records `official_release: false` plus the exact signing states. Such files must not be redistributed as official releases.
+A local build, manually dispatched build, or credential-incomplete tag build may run without credentials. In that case updater artifacts are disabled, platform installers are unsigned, the output directory contains `UNOFFICIAL-BUILD.txt`, and `build-metadata-*.json` records `official_release: false` plus the exact signing states. Such files must not be redistributed as official releases.
 
 ### Build and install
 

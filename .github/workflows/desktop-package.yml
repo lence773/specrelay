@@ -28,6 +28,17 @@ jobs:
           EVENT_NAME: ${{ github.event_name }}
           REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          TAURI_UPDATER_PUBLIC_KEY: ${{ vars.TAURI_UPDATER_PUBLIC_KEY }}
+          WINDOWS_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_CERTIFICATE_BASE64 }}
+          WINDOWS_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_CERTIFICATE_PASSWORD }}
+          APPLE_CERTIFICATE: ${{ secrets.APPLE_CERTIFICATE }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_PASSWORD: ${{ secrets.APPLE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ vars.APPLE_SIGNING_IDENTITY }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
         run: |
           set -euo pipefail
 
@@ -35,7 +46,38 @@ jobs:
           publish_release=false
           if [[ "$EVENT_NAME" == 'push' && "$REF_TYPE" == 'tag' ]]; then
             release_tag="$REF_NAME"
-            publish_release=true
+
+            # A tag is a signed release only when every required platform
+            # credential is present. This keeps credential-free projects from
+            # producing a red workflow: they receive unsigned test artifacts
+            # instead, and no GitHub Release or updater manifest is published.
+            release_credentials=(
+              TAURI_SIGNING_PRIVATE_KEY
+              TAURI_SIGNING_PRIVATE_KEY_PASSWORD
+              TAURI_UPDATER_PUBLIC_KEY
+              WINDOWS_CERTIFICATE_BASE64
+              WINDOWS_CERTIFICATE_PASSWORD
+              APPLE_CERTIFICATE
+              APPLE_CERTIFICATE_PASSWORD
+              APPLE_ID
+              APPLE_PASSWORD
+              APPLE_SIGNING_IDENTITY
+              APPLE_TEAM_ID
+            )
+            missing_credentials=()
+            for credential in "${release_credentials[@]}"; do
+              if [[ -z "${!credential:-}" ]]; then
+                missing_credentials+=("$credential")
+              fi
+            done
+
+            if [[ "${#missing_credentials[@]}" -eq 0 ]]; then
+              publish_release=true
+              echo 'All platform signing credentials are present; publishing a signed release.'
+            else
+              echo "::notice::Tag $release_tag is running as an unsigned test build because formal signing credentials are incomplete."
+              printf 'Missing release credentials: %s\n' "${missing_credentials[*]}"
+            fi
           fi
 
           version="$(./scripts/package-desktop.sh --check-version-only "$release_tag")"

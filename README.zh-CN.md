@@ -24,7 +24,7 @@ SpecRelay 是一个**本地优先、中文界面**的智能体工作流工具：
 
 ### GitHub Actions 构建
 
-在 GitHub Actions 手动运行 **Desktop package** 工作流，可以构建所有平台并下载构建产物；推送类似 `v1.0.0` 的版本标签会执行同一组原生构建，并将全部安装包发布到对应的 GitHub Release。
+在 GitHub Actions 手动运行 **Desktop package** 工作流，可以构建所有平台并下载构建产物。推送类似 `v1.0.0` 的版本标签同样会执行原生构建：当 Windows、macOS 与 Tauri 自动更新的全部正式签名凭据均已配置时，它会发布对应的 GitHub Release；凭据不完整时，标签构建会自动降级为未签名测试构建，只上传带有 `UNOFFICIAL-BUILD.txt` 标识的 Actions Artifacts，不创建 GitHub Release。
 
 | 目标平台 | 原生 Runner | 产物 |
 | --- | --- | --- |
@@ -35,10 +35,10 @@ SpecRelay 是一个**本地优先、中文界面**的智能体工作流工具：
 
 ### 发布签名、公证与可追溯信息
 
-标签构建属于**正式发布**，采用失败即停止（fail-closed）策略：
+只有在 Windows、macOS 与 Tauri 自动更新的全部凭据均已配置时，版本标签构建才会成为**正式发布**。否则它会成功降级为未签名测试构建，且不会创建 GitHub Release。通过凭据门槛后，正式发布仍采用失败即停止（fail-closed）策略：
 
-- Windows NSIS 与 MSI 安装包使用从 `WINDOWS_CERTIFICATE_BASE64` 临时导入的受信任证书完成 Authenticode 签名和 SHA-256 时间戳，并通过 `Get-AuthenticodeSignature` 检查。证书/密码缺失、证书过期或状态不是 `Valid` 时立即停止发布。
-- macOS `.app` 与最终 `.dmg` 使用 Developer ID Application 身份签名，提交 Apple 公证并装订票据；上传前必须通过 `codesign`、`spctl` 和 `xcrun stapler validate`。Apple 凭据缺失或任一校验失败时立即停止发布。
+- Windows NSIS 与 MSI 安装包使用从 `WINDOWS_CERTIFICATE_BASE64` 临时导入的受信任证书完成 Authenticode 签名和 SHA-256 时间戳，并通过 `Get-AuthenticodeSignature` 检查。证书过期、密码无效或状态不是 `Valid` 时立即停止发布。
+- macOS `.app` 与最终 `.dmg` 使用 Developer ID Application 身份签名，提交 Apple 公证并装订票据；上传前必须通过 `codesign`、`spctl` 和 `xcrun stapler validate`。任一签名或校验失败时立即停止发布。
 - 所有可自动更新的载荷都使用独立的 Tauri 更新私钥 `TAURI_SIGNING_PRIVATE_KEY` 生成脱离签名，并在发布前使用配对公钥验证。桌面安装包只注入 `TAURI_UPDATER_PUBLIC_KEY`；更新私钥及其密码、PFX/P12 内容、证书密码、Apple ID 专用密码和公证凭据只保存在 GitHub Actions Secrets 中，不会写入仓库、Release 文件或安装包。
 
 需要配置 GitHub Actions **Secrets**：`TAURI_SIGNING_PRIVATE_KEY`、`TAURI_SIGNING_PRIVATE_KEY_PASSWORD`、`WINDOWS_CERTIFICATE_BASE64`、`WINDOWS_CERTIFICATE_PASSWORD`、`APPLE_CERTIFICATE`、`APPLE_CERTIFICATE_PASSWORD`、`APPLE_ID`、`APPLE_PASSWORD`。还需配置非敏感的仓库 **Variables**：`TAURI_UPDATER_PUBLIC_KEY`、`APPLE_SIGNING_IDENTITY`、`APPLE_TEAM_ID`。Tauri 更新私钥必须单独生成并加密保存，不能与 Windows / Apple 代码签名身份复用。
@@ -73,7 +73,7 @@ Get-FileHash .\SpecRelay-*-windows-x64-nsis.exe -Algorithm SHA256
 Get-AuthenticodeSignature .\SpecRelay-*-windows-x64-nsis.exe | Format-List Status, StatusMessage, SignerCertificate
 ```
 
-本地构建或手动触发的工作流可以不提供凭据。此时会禁用更新载荷、生成未签名的平台安装包，在输出目录写入 `UNOFFICIAL-BUILD.txt`，并由 `build-metadata-*.json` 记录 `official_release: false` 和准确签名状态；这些文件不得作为正式发布物传播。
+本地构建、手动触发的工作流或凭据不完整的标签构建可以不提供凭据。此时会禁用更新载荷、生成未签名的平台安装包，在输出目录写入 `UNOFFICIAL-BUILD.txt`，并由 `build-metadata-*.json` 记录 `official_release: false` 和准确签名状态；这些文件不得作为正式发布物传播。
 
 ### 构建与安装
 
