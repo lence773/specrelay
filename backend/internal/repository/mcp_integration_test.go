@@ -468,7 +468,11 @@ func callToolDataInto(t *testing.T, ctx context.Context, session *mcp.ClientSess
 		t.Fatal(err)
 	}
 	if result.IsError {
-		t.Fatalf("tool %s returned an error: %+v", name, result.Content)
+		content, marshalErr := json.Marshal(result.Content)
+		if marshalErr != nil {
+			t.Fatalf("encode %s error response: %v", name, marshalErr)
+		}
+		t.Fatalf("tool %s returned an error: %s", name, content)
 	}
 	raw, err := json.Marshal(result.StructuredContent)
 	if err != nil {

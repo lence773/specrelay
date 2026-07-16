@@ -3309,7 +3309,15 @@ func TestGeneratedPlanPersistsImmutableExecutionSnapshotHistory(t *testing.T) {
 		t.Fatal(err)
 	}
 	spec := planspec.Spec{Title: "Snapshot plan", Summary: "Keep a baseline", Tasks: []planspec.Task{{Title: "Implement", Scope: []string{"backend"}, Acceptance: []string{"passes"}}}, FinalValidation: []string{"tests pass"}}
-	plan, _, err := store.SaveGeneratedPlan(ctx, intake, spec, planspec.Render(spec))
+	capturedWorkspace := PlanWorkspaceState{
+		NormalizedPath:        workspace,
+		GitRoot:               workspace,
+		GitRepositoryIdentity: "https://example.invalid/captured-baseline.git",
+		GitBranch:             "captured-baseline",
+		GitHead:               strings.Repeat("a", 40),
+		GitWorkspaceDigest:    strings.Repeat("a", 64),
+	}
+	plan, _, err := store.SaveGeneratedPlanWithWorkspace(ctx, intake, spec, planspec.Render(spec), capturedWorkspace)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -3323,7 +3331,13 @@ func TestGeneratedPlanPersistsImmutableExecutionSnapshotHistory(t *testing.T) {
 	if baseline.Sequence != 1 || baseline.Kind != domain.PlanSnapshotKindGenerationBaseline || baseline.RequirementID != intake.ID || baseline.RequirementVersion != 2 || baseline.PlanResourceVersion != 2 || baseline.PlanContentVersion != 1 {
 		t.Fatalf("baseline identity/version fields: %+v", baseline)
 	}
-	if baseline.GenerationProvider != "claude" || baseline.ExecutionProvider != "codex" || baseline.WorkspacePathNormalized != workspace || baseline.GitRoot == "" || baseline.GitHead == "" || len(baseline.GitWorkspaceDigest) != 64 {
+	if baseline.GenerationProvider != "claude" || baseline.ExecutionProvider != "codex" ||
+		baseline.WorkspacePathNormalized != capturedWorkspace.NormalizedPath ||
+		baseline.GitRoot != capturedWorkspace.GitRoot ||
+		baseline.GitRepositoryIdentity != capturedWorkspace.GitRepositoryIdentity ||
+		baseline.GitBranch != capturedWorkspace.GitBranch ||
+		baseline.GitHead != capturedWorkspace.GitHead ||
+		baseline.GitWorkspaceDigest != capturedWorkspace.GitWorkspaceDigest {
 		t.Fatalf("baseline provider/workspace/git fields: %+v", baseline)
 	}
 	if len(baseline.RequirementDigest) != 64 || len(baseline.PlanSpecDigest) != 64 || baseline.ProjectVersion != project.Version || baseline.ConfigVersion < 1 || !json.Valid(baseline.KeyExecutionFields) {
@@ -3376,6 +3390,47 @@ func TestGeneratedPlanPersistsImmutableExecutionSnapshotHistory(t *testing.T) {
 	}
 	if _, err = store.Pool.Exec(ctx, `UPDATE plan_execution_snapshots SET requirement_digest=$2 WHERE id=$1`, baseline.ID, strings.Repeat("0", 64)); err == nil {
 		t.Fatal("immutable baseline unexpectedly allowed an update")
+	}
+}
+
+func TestSuccessfulTaskPersistsCapturedWorkspaceInImmutableCheckpoint(t *testing.T) {
+	store := testStore(t)
+	ctx := context.Background()
+	workspace := t.TempDir()
+	_, plan, tasks := createReadyPlanFixture(t, store, workspace)
+	if _, err := store.QueuePlan(ctx, plan.ID, plan.Version); err != nil {
+		t.Fatal(err)
+	}
+	started, err := store.StartTask(ctx, tasks[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	capturedWorkspace := PlanWorkspaceState{
+		NormalizedPath:        workspace,
+		GitRoot:               workspace,
+		GitRepositoryIdentity: "https://example.invalid/captured-checkpoint.git",
+		GitBranch:             "captured-checkpoint",
+		GitHead:               strings.Repeat("b", 40),
+		GitWorkspaceDigest:    strings.Repeat("b", 64),
+	}
+	if err = store.FinishTaskWithCheckpoint(ctx, started, "session-captured-checkpoint", true, "done", &capturedWorkspace); err != nil {
+		t.Fatal(err)
+	}
+	checkpoint, err := store.GetLatestPlanExecutionSnapshot(ctx, plan.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if checkpoint.Kind != domain.PlanSnapshotKindTaskCheckpoint ||
+		checkpoint.WorkspacePathNormalized != capturedWorkspace.NormalizedPath ||
+		checkpoint.GitRoot != capturedWorkspace.GitRoot ||
+		checkpoint.GitRepositoryIdentity != capturedWorkspace.GitRepositoryIdentity ||
+		checkpoint.GitBranch != capturedWorkspace.GitBranch ||
+		checkpoint.GitHead != capturedWorkspace.GitHead ||
+		checkpoint.GitWorkspaceDigest != capturedWorkspace.GitWorkspaceDigest {
+		t.Fatalf("checkpoint workspace fields: %+v", checkpoint)
+	}
+	if _, err = store.Pool.Exec(ctx, `UPDATE plan_execution_snapshots SET git_head=$2 WHERE id=$1`, checkpoint.ID, strings.Repeat("c", 40)); err == nil {
+		t.Fatal("immutable checkpoint unexpectedly allowed an update")
 	}
 }
 

@@ -1103,15 +1103,9 @@ func (s *Store) saveGeneratedPlan(ctx context.Context, intake domain.Intake, spe
 
 	var baseline *domain.PlanExecutionSnapshot
 	if executable {
-		captured, captureErr := s.capturePlanExecutionSnapshotTx(ctx, tx, p.ID, domain.PlanSnapshotKindGenerationBaseline, nil, "")
+		captured, captureErr := s.capturePlanExecutionSnapshotWithWorkspaceTx(ctx, tx, p.ID, domain.PlanSnapshotKindGenerationBaseline, nil, "", workspace)
 		if captureErr != nil {
 			return p, nil, captureErr
-		}
-		if workspace != nil {
-			captured, captureErr = updatePlanSnapshotWorkspaceTx(ctx, tx, captured, *workspace)
-			if captureErr != nil {
-				return p, nil, captureErr
-			}
 		}
 		baseline = &captured
 		p.ExecutionSnapshotID = &captured.ID
@@ -1165,25 +1159,6 @@ func (s *Store) saveGeneratedPlan(ctx context.Context, intake domain.Intake, spe
 		return p, nil, err
 	}
 	return p, tasks, nil
-}
-
-func updatePlanSnapshotWorkspaceTx(ctx context.Context, tx pgx.Tx, snapshot domain.PlanExecutionSnapshot, workspace PlanWorkspaceState) (domain.PlanExecutionSnapshot, error) {
-	err := tx.QueryRow(ctx, `UPDATE plan_execution_snapshots
-		SET workspace_path_normalized=$2,git_root=$3,git_repository_identity=$4,
-			git_branch=$5,git_head=$6,git_workspace_digest=$7
-		WHERE id=$1
-		RETURNING `+planExecutionSnapshotColumns,
-		snapshot.ID, workspace.NormalizedPath, workspace.GitRoot, workspace.GitRepositoryIdentity,
-		workspace.GitBranch, workspace.GitHead, workspace.GitWorkspaceDigest).Scan(
-		&snapshot.ID, &snapshot.ProjectID, &snapshot.PlanID, &snapshot.IntakeID,
-		&snapshot.PreviousSnapshotID, &snapshot.TaskID, &snapshot.Sequence, &snapshot.Kind,
-		&snapshot.RequirementID, &snapshot.RequirementVersion, &snapshot.RequirementDigest,
-		&snapshot.PlanResourceVersion, &snapshot.PlanContentVersion, &snapshot.PlanSpecDigest,
-		&snapshot.ProjectVersion, &snapshot.ConfigVersion, &snapshot.KeyExecutionFields,
-		&snapshot.GenerationProvider, &snapshot.ExecutionProvider, &snapshot.WorkspacePathNormalized,
-		&snapshot.GitRoot, &snapshot.GitRepositoryIdentity, &snapshot.GitBranch, &snapshot.GitHead,
-		&snapshot.GitWorkspaceDigest, &snapshot.CreatedAt)
-	return snapshot, err
 }
 
 type planExecutionState struct {
@@ -2189,14 +2164,8 @@ func (s *Store) finishTask(ctx context.Context, t domain.PlanTask, sessionID str
 	}
 
 	if captureCheckpoint {
-		checkpoint, captureErr := s.capturePlanExecutionSnapshotTx(ctx, tx, t.PlanID, domain.PlanSnapshotKindTaskCheckpoint, &t.ID, "")
-		if captureErr != nil {
+		if _, captureErr := s.capturePlanExecutionSnapshotWithWorkspaceTx(ctx, tx, t.PlanID, domain.PlanSnapshotKindTaskCheckpoint, &t.ID, "", workspace); captureErr != nil {
 			return captureErr
-		}
-		if workspace != nil {
-			if _, captureErr = updatePlanSnapshotWorkspaceTx(ctx, tx, checkpoint, *workspace); captureErr != nil {
-				return captureErr
-			}
 		}
 	}
 	updatedState, err := loadPlanExecutionStateTx(ctx, tx, t.PlanID)

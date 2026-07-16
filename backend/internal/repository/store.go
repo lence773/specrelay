@@ -2529,10 +2529,21 @@ func latestPlanExecutionSnapshot(ctx context.Context, q snapshotQueryer, planID 
 }
 
 func (s *Store) capturePlanExecutionSnapshotTx(ctx context.Context, tx pgx.Tx, planID uuid.UUID, kind string, taskID *uuid.UUID, generationProvider string) (domain.PlanExecutionSnapshot, error) {
-	return s.capturePlanExecutionSnapshotWithChangesTx(ctx, tx, planID, kind, taskID, generationProvider, PlanExecutionCheckpointParams{})
+	return s.capturePlanExecutionSnapshotWithWorkspaceTx(ctx, tx, planID, kind, taskID, generationProvider, nil)
+}
+
+// capturePlanExecutionSnapshotWithWorkspaceTx writes a complete immutable snapshot in
+// one INSERT. A caller-provided workspace state comes from the lifecycle boundary,
+// where it is captured at the same point as plan generation or task completion.
+func (s *Store) capturePlanExecutionSnapshotWithWorkspaceTx(ctx context.Context, tx pgx.Tx, planID uuid.UUID, kind string, taskID *uuid.UUID, generationProvider string, workspace *PlanWorkspaceState) (domain.PlanExecutionSnapshot, error) {
+	return s.capturePlanExecutionSnapshotWithChangesAndWorkspaceTx(ctx, tx, planID, kind, taskID, generationProvider, PlanExecutionCheckpointParams{}, workspace)
 }
 
 func (s *Store) capturePlanExecutionSnapshotWithChangesTx(ctx context.Context, tx pgx.Tx, planID uuid.UUID, kind string, taskID *uuid.UUID, generationProvider string, changes PlanExecutionCheckpointParams) (domain.PlanExecutionSnapshot, error) {
+	return s.capturePlanExecutionSnapshotWithChangesAndWorkspaceTx(ctx, tx, planID, kind, taskID, generationProvider, changes, nil)
+}
+
+func (s *Store) capturePlanExecutionSnapshotWithChangesAndWorkspaceTx(ctx context.Context, tx pgx.Tx, planID uuid.UUID, kind string, taskID *uuid.UUID, generationProvider string, changes PlanExecutionCheckpointParams, workspace *PlanWorkspaceState) (domain.PlanExecutionSnapshot, error) {
 	if kind != domain.PlanSnapshotKindGenerationBaseline && kind != domain.PlanSnapshotKindTaskCheckpoint && kind != domain.PlanSnapshotKindUserAccepted {
 		return domain.PlanExecutionSnapshot{}, domain.ErrInvalidPlanDriftAudit
 	}
@@ -2564,6 +2575,14 @@ func (s *Store) capturePlanExecutionSnapshotWithChangesTx(ctx context.Context, t
 	state, err := loadPlanSnapshotState(ctx, tx, planID, generationProvider)
 	if err != nil {
 		return domain.PlanExecutionSnapshot{}, err
+	}
+	if workspace != nil {
+		state.WorkspacePathNormalized = workspace.NormalizedPath
+		state.GitRoot = workspace.GitRoot
+		state.GitRepositoryIdentity = workspace.GitRepositoryIdentity
+		state.GitBranch = workspace.GitBranch
+		state.GitHead = workspace.GitHead
+		state.GitWorkspaceDigest = workspace.GitWorkspaceDigest
 	}
 	automaticTaskCheckpoint := kind == domain.PlanSnapshotKindTaskCheckpoint && len(changes.Files) == 0 && len(changes.ChangeSummary) == 0
 	if !automaticTaskCheckpoint {
