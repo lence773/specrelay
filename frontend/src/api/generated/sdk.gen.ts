@@ -2,7 +2,7 @@
 
 import { type Client, type ClientMeta, formDataBodySerializer, type Options as Options2, type RequestResult, type ServerSentEventsResult, type TDataShape } from './client';
 import { client } from './client.gen';
-import type { AcceptPlanExecutionContextData, AcceptPlanExecutionContextErrors, AcceptPlanExecutionContextResponses, CreateFeedbackData, CreateFeedbackErrors, CreateFeedbackResponses, CreateIntakeData, CreateIntakeErrors, CreateIntakeResponses, CreateProjectData, CreateProjectErrors, CreateProjectResponses, DeletePlanData, DeletePlanErrors, DeletePlanResponses, DeleteProjectData, DeleteProjectErrors, DeleteProjectResponses, DiscussRequirementData, DiscussRequirementErrors, DiscussRequirementResponses, ExchangeAccessTokenData, ExchangeAccessTokenErrors, ExchangeAccessTokenResponses, ExportProjectObservabilityData, ExportProjectObservabilityErrors, ExportProjectObservabilityResponses, GeneratePlanData, GeneratePlanErrors, GeneratePlanResponses, GetAgentRunLogData, GetAgentRunLogErrors, GetAgentRunLogResponses, GetCheckpointData, GetCheckpointErrors, GetCheckpointResponses, GetFeedbackContextData, GetFeedbackContextErrors, GetFeedbackContextResponses, GetIntakeData, GetIntakeErrors, GetIntakeResponses, GetPlanData, GetPlanErrors, GetPlanExecutionContextData, GetPlanExecutionContextErrors, GetPlanExecutionContextResponses, GetPlanResponses, GetProjectData, GetProjectErrors, GetProjectResponses, GetProjectSettingsData, GetProjectSettingsErrors, GetProjectSettingsResponses, GetTaskData, GetTaskErrors, GetTaskResponses, ListAgentRunsData, ListAgentRunsErrors, ListAgentRunsResponses, ListDirectoriesData, ListDirectoriesErrors, ListDirectoriesResponses, ListEventsData, ListEventsErrors, ListEventsResponses, ListIntakesData, ListIntakesErrors, ListIntakesResponses, ListPlansData, ListPlansErrors, ListPlansResponses, ListPlanTasksData, ListPlanTasksErrors, ListPlanTasksResponses, ListProjectsData, ListProjectsErrors, ListProjectsResponses, ProbeAgentData, ProbeAgentErrors, ProbeAgentResponses, QueryProjectObservabilityData, QueryProjectObservabilityErrors, QueryProjectObservabilityResponses, RotateMcpTokenData, RotateMcpTokenErrors, RotateMcpTokenResponses, RunPlanData, RunPlanErrors, RunPlanResponses, RunTaskData, RunTaskErrors, RunTaskResponses, SetProjectAutomationData, SetProjectAutomationErrors, SetProjectAutomationResponses, StopPlanData, StopPlanErrors, StopPlanResponses, StopTaskData, StopTaskErrors, StopTaskResponses, StreamEventsData, StreamEventsErrors, StreamEventsResponse, StreamEventsResponses, UpdateIntakeData, UpdateIntakeErrors, UpdateIntakeResponses, UpdateProjectData, UpdateProjectErrors, UpdateProjectResponses, UpdateProjectSettingsData, UpdateProjectSettingsErrors, UpdateProjectSettingsResponses, UploadAttachmentData, UploadAttachmentErrors, UploadAttachmentResponses } from './types.gen';
+import type { AcceptPlanExecutionContextData, AcceptPlanExecutionContextErrors, AcceptPlanExecutionContextResponses, CreateFeedbackData, CreateFeedbackErrors, CreateFeedbackResponses, CreateIntakeData, CreateIntakeErrors, CreateIntakeResponses, CreateProjectData, CreateProjectErrors, CreateProjectResponses, DeletePlanData, DeletePlanErrors, DeletePlanResponses, DeleteProjectData, DeleteProjectErrors, DeleteProjectResponses, DiagnoseMcpData, DiagnoseMcpErrors, DiagnoseMcpResponses, DiscussRequirementData, DiscussRequirementErrors, DiscussRequirementResponses, ExchangeAccessTokenData, ExchangeAccessTokenErrors, ExchangeAccessTokenResponses, ExportProjectObservabilityData, ExportProjectObservabilityErrors, ExportProjectObservabilityResponses, GeneratePlanData, GeneratePlanErrors, GeneratePlanResponses, GetAgentRunLogData, GetAgentRunLogErrors, GetAgentRunLogResponses, GetCheckpointData, GetCheckpointErrors, GetCheckpointResponses, GetFeedbackContextData, GetFeedbackContextErrors, GetFeedbackContextResponses, GetIntakeData, GetIntakeErrors, GetIntakeResponses, GetMcpConnectionInfoData, GetMcpConnectionInfoErrors, GetMcpConnectionInfoResponses, GetPlanData, GetPlanErrors, GetPlanExecutionContextData, GetPlanExecutionContextErrors, GetPlanExecutionContextResponses, GetPlanResponses, GetProjectData, GetProjectErrors, GetProjectResponses, GetProjectSettingsData, GetProjectSettingsErrors, GetProjectSettingsResponses, GetTaskData, GetTaskErrors, GetTaskResponses, ListAgentRunsData, ListAgentRunsErrors, ListAgentRunsResponses, ListDirectoriesData, ListDirectoriesErrors, ListDirectoriesResponses, ListEventsData, ListEventsErrors, ListEventsResponses, ListIntakesData, ListIntakesErrors, ListIntakesResponses, ListPlansData, ListPlansErrors, ListPlansResponses, ListPlanTasksData, ListPlanTasksErrors, ListPlanTasksResponses, ListProjectsData, ListProjectsErrors, ListProjectsResponses, ProbeAgentData, ProbeAgentErrors, ProbeAgentResponses, QueryProjectObservabilityData, QueryProjectObservabilityErrors, QueryProjectObservabilityResponses, RotateMcpTokenData, RotateMcpTokenErrors, RotateMcpTokenResponses, RunPlanData, RunPlanErrors, RunPlanResponses, RunTaskData, RunTaskErrors, RunTaskResponses, SetProjectAutomationData, SetProjectAutomationErrors, SetProjectAutomationResponses, StopPlanData, StopPlanErrors, StopPlanResponses, StopTaskData, StopTaskErrors, StopTaskResponses, StreamEventsData, StreamEventsErrors, StreamEventsResponse, StreamEventsResponses, UpdateIntakeData, UpdateIntakeErrors, UpdateIntakeResponses, UpdateProjectData, UpdateProjectErrors, UpdateProjectResponses, UpdateProjectSettingsData, UpdateProjectSettingsErrors, UpdateProjectSettingsResponses, UploadAttachmentData, UploadAttachmentErrors, UploadAttachmentResponses } from './types.gen';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -461,6 +461,32 @@ export const probeAgent = <ThrowOnError extends boolean = false>(options: Option
         'Content-Type': 'application/json',
         ...options.headers
     }
+});
+
+/**
+ * Returns non-sensitive MCP connection metadata. endpointPath is relative so clients must combine it with their own current external origin rather than assuming the backend host is externally reachable.
+ */
+export const getMcpConnectionInfo = <ThrowOnError extends boolean = false>(options?: Options<GetMcpConnectionInfoData, ThrowOnError>): RequestResult<GetMcpConnectionInfoResponses, GetMcpConnectionInfoErrors, ThrowOnError> => (options?.client ?? client).get<GetMcpConnectionInfoResponses, GetMcpConnectionInfoErrors, ThrowOnError>({
+    security: [{
+            in: 'cookie',
+            name: 'specrelay_session',
+            type: 'apiKey'
+        }, { scheme: 'bearer', type: 'http' }],
+    url: '/settings/mcp',
+    ...options
+});
+
+/**
+ * Runs an MCP service availability diagnostic. This only verifies the SpecRelay MCP endpoint and processing chain; it does not report whether an external MCP client is connected.
+ */
+export const diagnoseMcp = <ThrowOnError extends boolean = false>(options?: Options<DiagnoseMcpData, ThrowOnError>): RequestResult<DiagnoseMcpResponses, DiagnoseMcpErrors, ThrowOnError> => (options?.client ?? client).post<DiagnoseMcpResponses, DiagnoseMcpErrors, ThrowOnError>({
+    security: [{
+            in: 'cookie',
+            name: 'specrelay_session',
+            type: 'apiKey'
+        }, { scheme: 'bearer', type: 'http' }],
+    url: '/settings/mcp/diagnostics',
+    ...options
 });
 
 export const rotateMcpToken = <ThrowOnError extends boolean = false>(options?: Options<RotateMcpTokenData, ThrowOnError>): RequestResult<RotateMcpTokenResponses, RotateMcpTokenErrors, ThrowOnError> => (options?.client ?? client).post<RotateMcpTokenResponses, RotateMcpTokenErrors, ThrowOnError>({

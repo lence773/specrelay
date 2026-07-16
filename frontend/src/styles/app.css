@@ -4957,3 +4957,178 @@ select {
   .database-reconfigure-actions { display: grid; grid-template-columns: 1fr; }
   .database-reconfigure-actions .button { width: 100%; }
 }
+
+.mcp-connection-section {
+  border-color: color-mix(in srgb, var(--accent) 36%, var(--line));
+}
+.mcp-loading {
+  min-height: 72px;
+  display: grid;
+  place-items: center;
+}
+.mcp-header-actions,
+.mcp-actions,
+.mcp-result-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+.mcp-connection-details {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(220px, .9fr);
+  gap: 12px;
+  margin-top: 17px;
+}
+.mcp-address-card,
+.mcp-facts,
+.mcp-diagnostic,
+.mcp-tools {
+  border: 1px solid #293a32;
+  border-radius: 10px;
+  background: rgba(14, 25, 20, .72);
+}
+.mcp-address-card {
+  display: grid;
+  align-content: start;
+  gap: 9px;
+  padding: 14px;
+}
+.mcp-address-card > span,
+.mcp-tools > div > span,
+.mcp-diagnostic > div > span,
+.mcp-actions small {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+.mcp-address-card code,
+.mcp-token-result code {
+  overflow-wrap: anywhere;
+  padding: 10px 11px;
+  border: 1px solid #32483c;
+  border-radius: 7px;
+  background: #0b100e;
+  color: #b9f1ce;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.mcp-address-card .button { justify-self: start; }
+.mcp-facts {
+  display: grid;
+  margin: 0;
+  overflow: hidden;
+}
+.mcp-facts > div {
+  display: grid;
+  grid-template-columns: 80px minmax(0, 1fr);
+  gap: 10px;
+  padding: 10px 12px;
+  border-bottom: 1px solid #26372f;
+}
+.mcp-facts > div:last-child { border-bottom: 0; }
+.mcp-facts dt,
+.mcp-facts dd { margin: 0; }
+.mcp-facts dt { color: var(--muted); font-size: 12px; }
+.mcp-facts dd { color: var(--text); font-size: 12px; overflow-wrap: anywhere; }
+.mcp-token-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+}
+.mcp-token-status::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #c6aa6e;
+}
+.mcp-token-status.configured { color: #a8e7c0; }
+.mcp-token-status.configured::before { background: #74ca9d; }
+.mcp-token-status.unconfigured { color: #e1c68d; }
+.mcp-actions {
+  margin-top: 12px;
+}
+.mcp-actions small { flex: 1 1 270px; }
+.mcp-notice {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border: 1px solid;
+  border-radius: 8px;
+  font-size: 12px;
+}
+.mcp-notice.success { border-color: #3e7857; background: #152b20; color: #ade7c2; }
+.mcp-notice.error { border-color: #6a4444; background: #2b1d1d; color: #efb0b0; }
+.mcp-diagnostic {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: center;
+  margin-top: 14px;
+  padding: 13px 14px;
+}
+.mcp-diagnostic > div:first-child,
+.mcp-tools > div {
+  display: grid;
+  gap: 3px;
+}
+.mcp-diagnostic strong,
+.mcp-tools strong { color: var(--text); font-size: 13px; }
+.mcp-diagnostic-state { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.mcp-diagnostic-result {
+  display: grid;
+  justify-items: end;
+  gap: 2px;
+  font-size: 12px;
+  text-align: right;
+}
+.mcp-diagnostic-result.success strong { color: #9de0b8; }
+.mcp-diagnostic-result.failure strong,
+.mcp-diagnostic-result.failure small { color: #efaaaa; }
+.mcp-diagnostic-result > span { color: var(--muted); font-size: 11px; }
+.mcp-diagnostic-result small { max-width: 260px; line-height: 1.45; }
+.mcp-tools { margin-top: 14px; padding: 14px; }
+.mcp-tools ul {
+  display: grid;
+  gap: 8px;
+  margin: 11px 0 0;
+  padding: 0;
+  list-style: none;
+}
+.mcp-tools li {
+  display: grid;
+  grid-template-columns: minmax(130px, .65fr) minmax(0, 1.35fr);
+  gap: 12px;
+  align-items: start;
+  padding: 10px 11px;
+  border: 1px solid #293a32;
+  border-radius: 7px;
+  background: #101914;
+}
+.mcp-tools code { color: #b6edcc; font-size: 12px; overflow-wrap: anywhere; }
+.mcp-tools li span { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.mcp-rotation-modal,
+.mcp-token-result-modal { width: min(590px, calc(100vw - 30px)); }
+.mcp-rotation-dialog,
+.mcp-token-result { display: grid; gap: 13px; }
+.mcp-rotation-dialog p,
+.mcp-token-result p { margin: 0; color: #b4c0ba; font-size: 13px; line-height: 1.65; }
+.mcp-token-result code { display: block; color: #e4f8ec; }
+.mcp-result-actions { margin-top: 1px; }
+@media (max-width: 680px) {
+  .mcp-connection-details { grid-template-columns: 1fr; }
+  .mcp-diagnostic { align-items: start; flex-direction: column; }
+  .mcp-diagnostic-result { justify-items: start; text-align: left; }
+}
+@media (max-width: 560px) {
+  .mcp-header-actions,
+  .mcp-actions,
+  .mcp-result-actions { align-items: stretch; flex-direction: column; }
+  .mcp-header-actions .button,
+  .mcp-actions .button,
+  .mcp-result-actions .button,
+  .mcp-address-card .button { width: 100%; }
+  .mcp-facts > div,
+  .mcp-tools li { grid-template-columns: 1fr; gap: 5px; }
+}

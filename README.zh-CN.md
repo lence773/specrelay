@@ -201,8 +201,16 @@ curl http://127.0.0.1:43846/readyz
 ```
 
 - REST 前缀：`/api/v1`
-- MCP：`/mcp`（使用独立 MCP Bearer Token）
+- MCP：`/mcp`（Streamable HTTP，使用独立 MCP Bearer Token）
 - OpenAPI 契约：[`api/openapi.yaml`](api/openapi.yaml)
+
+### 连接 MCP 客户端
+
+登录后，打开**设置 → MCP 连接**。页面会基于浏览器当前访问地址和 `/mcp` 生成 MCP 服务地址，因此在 Vite 开发代理或桌面端运行时都应使用页面展示的地址。页面还会展示传输方式、Bearer 鉴权要求、非敏感 Token 状态、服务工具、版本信息与最近一次服务可用性诊断。
+
+使用“复制客户端配置”可获得可直接填写到 MCP 客户端的配置。在刚新建或轮换 Token 之前，配置会刻意使用 `Bearer <在此填写 MCP Bearer Token>` 占位符，而不会包含既有 Token。请在 MCP 客户端中将独立的 `MCP_TOKEN` 作为 `Authorization: Bearer <token>` 请求头发送；它与浏览器登录 Token 无关。
+
+只有准备好更新所有 MCP 客户端时才应选择“轮换 Token”：确认操作会明确说明旧 Token 将立即失效。新生成的 Token 只会在轮换结果界面展示一次，可在该界面复制 Token 或包含它的客户端配置；关闭结果或离开设置页后无法再次查看。服务可用性诊断只验证 SpecRelay MCP 服务端点及处理链，不代表外部 MCP 客户端已建立连接。
 
 详细的队列语义、工作区租约、SSE、认证与环境变量见 [架构文档](docs/go-postgres-architecture.md)。
 

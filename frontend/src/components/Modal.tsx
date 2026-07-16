@@ -6,26 +6,31 @@ export function Modal({
   onClose,
   wide = false,
   className = "",
+  closeDisabled = false,
 }: {
   title: string;
   children: ReactNode;
   onClose: () => void;
   wide?: boolean;
   className?: string;
+  closeDisabled?: boolean;
 }) {
   const titleId = useId();
+  const requestClose = () => {
+    if (!closeDisabled) onClose();
+  };
   useEffect(() => {
     const close = (event: KeyboardEvent) => {
-      if (event.key === "Escape") onClose();
+      if (event.key === "Escape") requestClose();
     };
     window.addEventListener("keydown", close);
     return () => window.removeEventListener("keydown", close);
-  }, [onClose]);
+  }, [closeDisabled, onClose]);
   return (
     <div
       className="modal-backdrop"
       onMouseDown={(e) => {
-        if (e.target === e.currentTarget) onClose();
+        if (e.target === e.currentTarget) requestClose();
       }}
     >
       <section
@@ -42,8 +47,9 @@ export function Modal({
           <button
             type="button"
             className="icon-button"
-            onClick={onClose}
+            onClick={requestClose}
             aria-label="关闭"
+            disabled={closeDisabled}
           >
             ×
           </button>

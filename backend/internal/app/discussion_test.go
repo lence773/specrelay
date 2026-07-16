@@ -104,6 +104,17 @@ func TestAdapterForRejectsInvalidProvider(t *testing.T) {
 	}
 }
 
+func TestResolvedTaskExecutionProviderUsesProjectDefaultWhenRequestedProviderIsEmpty(t *testing.T) {
+	settings := testProviderSettings()
+	provider, err := resolvedTaskExecutionProvider("", settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if provider != agent.ProviderCodex {
+		t.Fatalf("provider=%q", provider)
+	}
+}
+
 func TestTaskInvocationMapsResolvedProviderCommandAndArgs(t *testing.T) {
 	settings := testProviderSettings()
 	for _, test := range []struct {

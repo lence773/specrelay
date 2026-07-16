@@ -188,8 +188,16 @@ curl http://127.0.0.1:43846/readyz
 ```
 
 - REST prefix: `/api/v1`
-- MCP: `/mcp` (separate MCP bearer token)
+- MCP: `/mcp` (Streamable HTTP with a separate MCP bearer token)
 - OpenAPI contract: [`api/openapi.yaml`](api/openapi.yaml)
+
+### Connect an MCP client
+
+Open **Settings → MCP Connection** after signing in. The page derives the MCP service address from the browser's current origin plus `/mcp`, so use the displayed address when developing through Vite or running the desktop app. It also shows the transport, Bearer authentication requirement, non-sensitive token status, server tools, version information, and the latest server availability diagnostic.
+
+Use **Copy client configuration** to copy a client-ready configuration. Until a token has just been created or rotated, that configuration deliberately contains the placeholder `Bearer <enter MCP Bearer Token here>` rather than an existing token. Supply the dedicated `MCP_TOKEN` as the `Authorization: Bearer <token>` header in your MCP client; it is separate from the browser login token.
+
+Choose **Rotate Token** only when you are ready to update every MCP client: confirmation states that the old token is invalid immediately. The newly generated token is shown only once in the rotation result, where it can be copied along with a configuration; closing the result or leaving Settings prevents it from being displayed again. The service availability diagnostic verifies the SpecRelay MCP endpoint and processing chain only—it does not report whether an external MCP client is connected.
 
 For queue semantics, workspace leases, SSE, authentication, and environment variables, see [the architecture document](docs/go-postgres-architecture.md).
 

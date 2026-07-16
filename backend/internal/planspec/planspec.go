@@ -690,9 +690,6 @@ func normalizeList(values []string, paths bool) []string {
 		if paths {
 			value = strings.ReplaceAll(value, "\\", "/")
 			value = strings.TrimPrefix(filepath.Clean(value), "./")
-			if value == "." {
-				continue
-			}
 		}
 		if !seen[value] {
 			seen[value] = true
@@ -715,9 +712,6 @@ func normalizePaths(values []string) ([]string, []string) {
 		}
 		value = strings.ReplaceAll(value, "\\", "/")
 		value = strings.TrimPrefix(filepath.Clean(value), "./")
-		if value == "." {
-			continue
-		}
 		if strings.HasPrefix(value, "../") || strings.HasPrefix(value, "/") || drivePath.MatchString(value) {
 			invalid = append(invalid, raw)
 			continue

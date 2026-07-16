@@ -94,7 +94,9 @@ SSE 地址为 `/api/v1/events/stream?projectId=<uuid>`。PostgreSQL `events.id` 
 
 `agent.output` 不属于领域状态事件：写入层拒绝新增此类记录，历史 REST 查询和 SSE 查询也显式排除数据库中可能遗留的旧记录。过滤只降低事件总线的高频噪声；独立的 `agent_runs` 元数据和 `DATA_DIR/logs` 运行日志仍完整保留，并通过专用运行日志 API 查询。
 
-MCP 暴露在 `/mcp`，使用独立 Bearer Token。MCP 和 REST 复用同一个 application service 与 repository，因此产生相同的资源、作业和领域事件。MCP 不提供任意路径读取或任意命令执行工具。
+MCP 暴露在 `/mcp`，使用独立 Bearer Token 和 Streamable HTTP 传输。MCP 和 REST 复用同一个 application service 与 repository，因此产生相同的资源、作业和领域事件。MCP 不提供任意路径读取或任意命令执行工具。
+
+浏览器会话认证后的“设置 → MCP 连接”入口通过 `/api/v1/settings/mcp` 返回非敏感连接元数据，并通过 `/api/v1/settings/mcp/diagnostics` 触发 MCP 服务端点和处理链诊断；服务端返回相对端点路径，由前端与当前浏览器 origin 组合，不能假定后端收到的 Host 是唯一外部地址。设置接口只报告 Token 是否已配置，绝不回显既有 Token 或其摘要。客户端配置在未刚完成轮换时必须使用 Token 占位符。轮换接口只在成功响应中返回一次新 Token；旧 Token 立即失效，前端关闭结果界面或离开设置页后必须清除该明文。诊断结论仅表示 SpecRelay MCP 服务的可用性，不表示任何外部 MCP 客户端当前已连接、断开或保持会话。
 
 ## 认证和本机边界
 

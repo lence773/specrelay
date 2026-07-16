@@ -286,6 +286,18 @@ paths:
       description: Detect both configured local CLI commands. This diagnostic operation never selects a business execution provider and never changes ProjectSettings.agentProvider.
       requestBody: {required: true, content: {application/json: {schema: {type: object, required: [projectId], additionalProperties: false, properties: {projectId: {type: string, format: uuid}}}}}}
       responses: {'200': {description: Independent Codex CLI and Claude CLI probe results, content: {application/json: {schema: {$ref: '#/components/schemas/CLIProbeResponse'}}}}, default: {$ref: '#/components/responses/Error'}}
+  /settings/mcp:
+    get:
+      tags: [Settings]
+      operationId: getMcpConnectionInfo
+      description: Returns non-sensitive MCP connection metadata. endpointPath is relative so clients must combine it with their own current external origin rather than assuming the backend host is externally reachable.
+      responses: {'200': {description: MCP connection metadata, content: {application/json: {schema: {$ref: '#/components/schemas/McpConnectionInfo'}}}}, default: {$ref: '#/components/responses/Error'}}
+  /settings/mcp/diagnostics:
+    post:
+      tags: [Settings]
+      operationId: diagnoseMcp
+      description: Runs an MCP service availability diagnostic. This only verifies the SpecRelay MCP endpoint and processing chain; it does not report whether an external MCP client is connected.
+      responses: {'200': {description: Result of this MCP availability diagnostic, content: {application/json: {schema: {$ref: '#/components/schemas/McpDiagnostic'}}}}, default: {$ref: '#/components/responses/Error'}}
   /settings/mcp-token/rotate:
     post:
       tags: [Settings]
@@ -332,6 +344,47 @@ components:
       type: string
       enum: [codex, claude]
       description: CLI provider used for a business agent invocation. No other provider value is valid.
+    McpTool:
+      type: object
+      required: [name, description]
+      additionalProperties: false
+      properties:
+        name: {type: string, description: MCP tool name exposed by the SpecRelay server}
+        description: {type: string, description: Human-readable description of the exposed MCP tool}
+    McpAuthentication:
+      type: object
+      required: [scheme, description]
+      additionalProperties: false
+      properties:
+        scheme: {type: string, enum: [bearer]}
+        description: {type: string, description: Send the dedicated MCP token in the Authorization header as Bearer <token>.}
+    McpTokenStatus:
+      type: object
+      required: [state]
+      additionalProperties: false
+      properties:
+        state: {type: string, enum: [configured, unconfigured], description: Non-sensitive MCP token state. The token value is never returned.}
+    McpConnectionInfo:
+      type: object
+      required: [endpointPath, transport, authentication, token, tools, serviceName, serviceVersion]
+      additionalProperties: false
+      properties:
+        endpointPath: {type: string, pattern: '^/', description: Relative path of the MCP endpoint. Combine with the current external origin on the client.}
+        transport: {type: string, enum: [streamable-http], description: MCP Streamable HTTP transport.}
+        authentication: {$ref: '#/components/schemas/McpAuthentication'}
+        token: {$ref: '#/components/schemas/McpTokenStatus'}
+        tools: {type: array, items: {$ref: '#/components/schemas/McpTool'}, description: Tools currently exposed by the MCP server.}
+        serviceName: {type: string, description: MCP server implementation name.}
+        serviceVersion: {type: string, description: MCP server implementation version.}
+        protocolVersion: {type: string, description: MCP protocol version when the server can provide it.}
+    McpDiagnostic:
+      type: object
+      required: [success, checkedAt]
+      additionalProperties: false
+      properties:
+        success: {type: boolean, description: Whether this MCP availability diagnostic succeeded.}
+        checkedAt: {type: string, format: date-time, description: Time at which this diagnostic was performed.}
+        failure: {type: string, description: Displayable failure information. Present when success is false.}
     VersionInput: {type: object, required: [version], properties: {version: {type: integer, format: int64, minimum: 1}}}
     PlanGenerationInput:
       type: object

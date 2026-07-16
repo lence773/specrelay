@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"mime/multipart"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -27,6 +28,7 @@ import (
 	"github.com/lyming99/specrelay/backend/internal/app"
 	"github.com/lyming99/specrelay/backend/internal/domain"
 	"github.com/lyming99/specrelay/backend/internal/events"
+	"github.com/lyming99/specrelay/backend/internal/mcpapi"
 	"github.com/lyming99/specrelay/backend/internal/repository"
 )
 
@@ -53,6 +55,32 @@ type asyncResponse struct {
 	JobID           uuid.UUID `json:"jobId"`
 	State           string    `json:"state"`
 	ResourceVersion int64     `json:"resourceVersion"`
+}
+
+type mcpConnectionInfo struct {
+	EndpointPath    string                `json:"endpointPath"`
+	Transport       string                `json:"transport"`
+	Authentication  mcpAuthentication     `json:"authentication"`
+	Token           mcpTokenStatus        `json:"token"`
+	Tools           []mcpapi.ToolMetadata `json:"tools"`
+	ServiceName     string                `json:"serviceName"`
+	ServiceVersion  string                `json:"serviceVersion"`
+	ProtocolVersion string                `json:"protocolVersion,omitempty"`
+}
+
+type mcpAuthentication struct {
+	Scheme      string `json:"scheme"`
+	Description string `json:"description"`
+}
+
+type mcpTokenStatus struct {
+	State string `json:"state"`
+}
+
+type mcpDiagnostic struct {
+	Success   bool      `json:"success"`
+	CheckedAt time.Time `json:"checkedAt"`
+	Failure   string    `json:"failure,omitempty"`
 }
 
 type feedbackAssociationInput struct {
@@ -141,6 +169,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/projects/{id}/observability/export", s.exportAgentRunObservability)
 	mux.HandleFunc("GET /api/v1/agent-runs/{id}/log", s.agentRunLog)
 	mux.HandleFunc("POST /api/v1/agents/probe", s.probeAgent)
+	mux.HandleFunc("GET /api/v1/settings/mcp", s.mcpConnectionInfo)
+	mux.HandleFunc("POST /api/v1/settings/mcp/diagnostics", s.diagnoseMCP)
 	mux.HandleFunc("POST /api/v1/settings/mcp-token/rotate", s.rotateMCPToken)
 	mux.HandleFunc("GET /api/v1/events", s.eventHistory)
 	mux.HandleFunc("GET /api/v1/events/stream", s.eventStream)
@@ -1324,6 +1354,89 @@ func (s *Server) probeAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	result, err := s.App.ProbeAgents(r.Context(), in.ProjectID)
 	respond(w, r, result, err)
+}
+
+func (s *Server) mcpConnectionInfo(w http.ResponseWriter, r *http.Request) {
+	if s.MCP == nil {
+		writeError(w, r, http.StatusServiceUnavailable, "mcp_unavailable", "MCP service is unavailable", nil)
+		return
+	}
+
+	tokenState := "unconfigured"
+	if s.Auth != nil && s.Auth.MCPTokenConfigured() {
+		tokenState = "configured"
+	}
+	writeJSON(w, http.StatusOK, mcpConnectionInfo{
+		EndpointPath: mcpapi.EndpointPath,
+		Transport:    mcpapi.Transport,
+		Authentication: mcpAuthentication{
+			Scheme:      mcpapi.AuthenticationScheme,
+			Description: mcpapi.AuthenticationDescription,
+		},
+		Token:           mcpTokenStatus{State: tokenState},
+		Tools:           mcpapi.Tools(),
+		ServiceName:     mcpapi.ServiceName,
+		ServiceVersion:  mcpapi.ServiceVersion,
+		ProtocolVersion: mcpapi.DiagnosticProtocolVersion,
+	})
+}
+
+func (s *Server) diagnoseMCP(w http.ResponseWriter, r *http.Request) {
+	result := mcpDiagnostic{CheckedAt: time.Now().UTC()}
+	if s.MCP == nil {
+		result.Failure = "MCP service is unavailable."
+		writeJSON(w, http.StatusOK, result)
+		return
+	}
+
+	body, err := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      1,
+		"method":  "initialize",
+		"params": map[string]any{
+			"protocolVersion": mcpapi.DiagnosticProtocolVersion,
+			"capabilities":    map[string]any{},
+			"clientInfo": map[string]string{
+				"name":    "specrelay-diagnostic",
+				"version": mcpapi.ServiceVersion,
+			},
+		},
+	})
+	if err != nil {
+		result.Failure = "MCP diagnostic request could not be created."
+		writeJSON(w, http.StatusOK, result)
+		return
+	}
+
+	diagnosticRequest, err := http.NewRequestWithContext(r.Context(), http.MethodPost, mcpapi.EndpointPath, bytes.NewReader(body))
+	if err != nil {
+		result.Failure = "MCP diagnostic request could not be created."
+		writeJSON(w, http.StatusOK, result)
+		return
+	}
+	diagnosticRequest.Header.Set("Content-Type", "application/json")
+	diagnosticRequest.Header.Set("Accept", "application/json, text/event-stream")
+	diagnosticRequest.Header.Set("MCP-Protocol-Version", mcpapi.DiagnosticProtocolVersion)
+	recorder := httptest.NewRecorder()
+	s.MCP.ServeHTTP(recorder, diagnosticRequest)
+
+	if recorder.Code < http.StatusOK || recorder.Code >= http.StatusMultipleChoices {
+		result.Failure = fmt.Sprintf("MCP endpoint returned HTTP status %d.", recorder.Code)
+		writeJSON(w, http.StatusOK, result)
+		return
+	}
+	var response struct {
+		JSONRPC string          `json:"jsonrpc"`
+		Result  json.RawMessage `json:"result"`
+		Error   json.RawMessage `json:"error"`
+	}
+	if err := json.Unmarshal(recorder.Body.Bytes(), &response); err != nil || response.JSONRPC != "2.0" || len(response.Result) == 0 || len(response.Error) != 0 {
+		result.Failure = "MCP endpoint returned an invalid diagnostic response."
+		writeJSON(w, http.StatusOK, result)
+		return
+	}
+	result.Success = true
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (s *Server) rotateMCPToken(w http.ResponseWriter, r *http.Request) {

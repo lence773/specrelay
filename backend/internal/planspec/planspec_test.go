@@ -202,6 +202,16 @@ func TestRejectEscapingScopeWithExplicitProblem(t *testing.T) {
 	}
 }
 
+func TestParseAllowsWorkspaceRootScope(t *testing.T) {
+	spec, err := Parse([]byte(v2PlanJSON(`{"key":"P001","title":"Bootstrap","dependsOn":[],"scope":["."],"inputs":["empty workspace"],"outputs":["project skeleton"],"risks":["initial structure"],"acceptance":[{"key":"P001-A001","description":"workspace root is covered"}],"validationCommands":["go test ./..."]}`)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(spec.Tasks) != 1 || len(spec.Tasks[0].Scope) != 1 || spec.Tasks[0].Scope[0] != "." {
+		t.Fatalf("scope=%#v", spec.Tasks[0].Scope)
+	}
+}
+
 func TestLegacyCompositeLiteralRemainsSupported(t *testing.T) {
 	spec := Spec{
 		Title:           "Legacy",

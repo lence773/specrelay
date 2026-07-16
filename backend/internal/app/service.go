@@ -1066,7 +1066,7 @@ func (s *Service) generatePlan(ctx context.Context, job domain.Job, project doma
 
 Return ONLY a JSON object matching PlanSpec v2 with this shape:
 {"version":2,"compatibilityMode":false,"title":"...","summary":"...","tasks":[{"key":"P001","title":"...","dependsOn":[],"scope":["workspace/relative/path"],"inputs":["..."],"outputs":["..."],"risks":["..."],"acceptance":[{"key":"P001-A001","description":"..."}],"validationCommands":["focused test or verification command"]}],"finalValidation":{"acceptance":[{"key":"FINAL-A001","description":"..."}],"commands":["final verification command"]}}.
-Task keys and acceptance keys must remain unique after trimming, upper-casing, and separator normalization. Dependencies may only reference task keys in this plan; do not create self-dependencies or cycles. Describe explicit inputs, expected outputs, material risks, structured acceptance items, and useful validation command suggestions for every task. Use dependencies to express the execution graph; when tasks are otherwise independent, preserve their listed order as the deterministic execution preference. Write title, summary, task titles, inputs, outputs, risks, and acceptance descriptions in Simplified Chinese. Scope entries must be real workspace-relative paths discovered from the project; do not invent paths. Final validation must contain structured acceptance items and at least one concrete command suggestion.
+Task keys and acceptance keys must remain unique after trimming, upper-casing, and separator normalization. Dependencies may only reference task keys in this plan; do not create self-dependencies or cycles. Describe explicit inputs, expected outputs, material risks, structured acceptance items, and useful validation command suggestions for every task. Use dependencies to express the execution graph; when tasks are otherwise independent, preserve their listed order as the deterministic execution preference. Write title, summary, task titles, inputs, outputs, risks, and acceptance descriptions in Simplified Chinese. Scope entries must be real workspace-relative paths discovered from the project; use "." when a task legitimately covers the workspace root, and do not invent other paths. Final validation must contain structured acceptance items and at least one concrete command suggestion.
 
 Project: %s
 Description: %s
@@ -1435,7 +1435,8 @@ func (s *Service) executeTask(ctx context.Context, job domain.Job, project domai
 		return err
 	}
 	if !isValidation {
-		if _, _, _, err = adapterFor(requestedProvider, settings); err != nil {
+		requestedProvider, err = resolvedTaskExecutionProvider(requestedProvider, settings)
+		if err != nil {
 			return err
 		}
 	}
@@ -1724,8 +1725,8 @@ func (s *Service) requestedProviderForTask(ctx context.Context, job domain.Job, 
 			return "", fmt.Errorf("invalid task job payload: %w", err)
 		}
 	}
-	if payload.ProviderRequested || strings.TrimSpace(payload.Provider) != "" {
-		return payload.Provider, nil
+	if provider := strings.TrimSpace(payload.Provider); provider != "" {
+		return provider, nil
 	}
 	plan, err := s.Store.GetPlan(ctx, task.PlanID)
 	if err != nil {
@@ -1861,6 +1862,22 @@ func adapterFor(requested string, settings domain.ProjectSettings) (agent.Adapte
 		}
 	}
 	return adapter, command, append([]string(nil), args...), nil
+}
+
+// resolvedTaskExecutionProvider turns the optional request override into the
+// concrete adapter name used by the run. It is deliberately used for session
+// storage too: an omitted override means "use project default", not "store an
+// empty provider".
+func resolvedTaskExecutionProvider(requested string, settings domain.ProjectSettings) (string, error) {
+	adapter, _, _, err := adapterFor(requested, settings)
+	if err != nil {
+		return "", err
+	}
+	provider := strings.TrimSpace(adapter.Name())
+	if provider == "" {
+		return "", errors.New("resolved task execution provider is empty")
+	}
+	return provider, nil
 }
 
 func providerFromJob(raw json.RawMessage) string {

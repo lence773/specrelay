@@ -15,6 +15,7 @@ import (
 
 type Auth struct {
 	browserHash, mcpHash [32]byte
+	mcpConfigured        bool
 	browserOneTime       bool
 	browserConsumed      bool
 	mu                   sync.RWMutex
@@ -39,6 +40,7 @@ func NewAuth(browserToken, mcpToken string) (*Auth, Tokens) {
 	return &Auth{
 		browserHash:    sha256.Sum256([]byte(tokens.Browser)),
 		mcpHash:        sha256.Sum256([]byte(tokens.MCP)),
+		mcpConfigured:  tokens.MCP != "",
 		browserOneTime: tokens.BrowserGenerated,
 		sessions:       map[string]time.Time{},
 	}, tokens
@@ -90,8 +92,22 @@ func (a *Auth) Allowed(r *http.Request) bool {
 
 func (a *Auth) SetMCPToken(token string) {
 	a.mu.Lock()
-	a.mcpHash = sha256.Sum256([]byte(token))
+	if token == "" {
+		a.mcpHash = [32]byte{}
+		a.mcpConfigured = false
+	} else {
+		a.mcpHash = sha256.Sum256([]byte(token))
+		a.mcpConfigured = true
+	}
 	a.mu.Unlock()
+}
+
+// MCPTokenConfigured reports whether an active MCP bearer token is available
+// without exposing the token or its hash.
+func (a *Auth) MCPTokenConfigured() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.mcpConfigured
 }
 
 func LocalRequest(r *http.Request) bool {

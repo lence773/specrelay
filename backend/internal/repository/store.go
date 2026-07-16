@@ -44,7 +44,12 @@ func WithExecutionProvider(ctx context.Context, provider string) context.Context
 
 func executionProviderFromContext(ctx context.Context) (string, bool) {
 	selection, ok := ctx.Value(executionProviderContextKey{}).(executionProviderSelection)
-	return selection.Provider, ok
+	provider := strings.TrimSpace(selection.Provider)
+	// HTTP handlers install the context value even when the optional request
+	// field is omitted. An empty selection is therefore not an explicit
+	// override and must not be serialized as providerRequested=true; doing so
+	// leaves workers with an empty provider after a successful CLI invocation.
+	return provider, ok && provider != ""
 }
 
 const planExecutionProviderKey = "executionAgentProvider"

@@ -9,6 +9,76 @@ export type ClientOptions = {
  */
 export type CliProvider = 'codex' | 'claude';
 
+export type McpTool = {
+    /**
+     * MCP tool name exposed by the SpecRelay server
+     */
+    name: string;
+    /**
+     * Human-readable description of the exposed MCP tool
+     */
+    description: string;
+};
+
+export type McpAuthentication = {
+    scheme: 'bearer';
+    /**
+     * Send the dedicated MCP token in the Authorization header as Bearer <token>.
+     */
+    description: string;
+};
+
+export type McpTokenStatus = {
+    /**
+     * Non-sensitive MCP token state. The token value is never returned.
+     */
+    state: 'configured' | 'unconfigured';
+};
+
+export type McpConnectionInfo = {
+    /**
+     * Relative path of the MCP endpoint. Combine with the current external origin on the client.
+     */
+    endpointPath: string;
+    /**
+     * MCP Streamable HTTP transport.
+     */
+    transport: 'streamable-http';
+    authentication: McpAuthentication;
+    token: McpTokenStatus;
+    /**
+     * Tools currently exposed by the MCP server.
+     */
+    tools: Array<McpTool>;
+    /**
+     * MCP server implementation name.
+     */
+    serviceName: string;
+    /**
+     * MCP server implementation version.
+     */
+    serviceVersion: string;
+    /**
+     * MCP protocol version when the server can provide it.
+     */
+    protocolVersion?: string;
+};
+
+export type McpDiagnostic = {
+    /**
+     * Whether this MCP availability diagnostic succeeded.
+     */
+    success: boolean;
+    /**
+     * Time at which this diagnostic was performed.
+     */
+    checkedAt: string;
+    /**
+     * Displayable failure information. Present when success is false.
+     */
+    failure?: string;
+};
+
 export type VersionInput = {
     version: number;
 };
@@ -1939,6 +2009,56 @@ export type ProbeAgentResponses = {
 };
 
 export type ProbeAgentResponse = ProbeAgentResponses[keyof ProbeAgentResponses];
+
+export type GetMcpConnectionInfoData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/settings/mcp';
+};
+
+export type GetMcpConnectionInfoErrors = {
+    /**
+     * Error response
+     */
+    default: Error;
+};
+
+export type GetMcpConnectionInfoError = GetMcpConnectionInfoErrors[keyof GetMcpConnectionInfoErrors];
+
+export type GetMcpConnectionInfoResponses = {
+    /**
+     * MCP connection metadata
+     */
+    200: McpConnectionInfo;
+};
+
+export type GetMcpConnectionInfoResponse = GetMcpConnectionInfoResponses[keyof GetMcpConnectionInfoResponses];
+
+export type DiagnoseMcpData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/settings/mcp/diagnostics';
+};
+
+export type DiagnoseMcpErrors = {
+    /**
+     * Error response
+     */
+    default: Error;
+};
+
+export type DiagnoseMcpError = DiagnoseMcpErrors[keyof DiagnoseMcpErrors];
+
+export type DiagnoseMcpResponses = {
+    /**
+     * Result of this MCP availability diagnostic
+     */
+    200: McpDiagnostic;
+};
+
+export type DiagnoseMcpResponse = DiagnoseMcpResponses[keyof DiagnoseMcpResponses];
 
 export type RotateMcpTokenData = {
     body?: never;

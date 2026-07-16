@@ -42,6 +42,238 @@ func (t bearerTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return t.base.RoundTrip(clone)
 }
 
+func TestMCPSettingsRoutesAndTokenRotation(t *testing.T) {
+	databaseURL := os.Getenv("TEST_DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("TEST_DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	pool, err := pgxpool.New(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	if err = migrations.Run(ctx, pool); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = pool.Exec(ctx, `TRUNCATE runtime_instances,access_tokens,agent_runs,events,workspace_leases,jobs,plan_tasks,plans,attachments,intakes,project_settings,projects RESTART IDENTITY CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+
+	store := repository.New(pool)
+	service := app.New(store, agent.NewRunner(), t.TempDir(), 30*time.Second, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	auth, _ := httpapi.NewAuth(testBrowserToken, testMCPToken)
+	api := &httpapi.Server{
+		Store:  store,
+		App:    service,
+		Auth:   auth,
+		Logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+		MCP:    mcpapi.Handler(service, store),
+	}
+	httpServer := httptest.NewServer(api.Handler())
+	t.Cleanup(httpServer.Close)
+
+	for _, route := range []struct {
+		method string
+		path   string
+	}{
+		{method: http.MethodGet, path: "/api/v1/settings/mcp"},
+		{method: http.MethodPost, path: "/api/v1/settings/mcp/diagnostics"},
+		{method: http.MethodPost, path: "/api/v1/settings/mcp-token/rotate"},
+	} {
+		req, requestErr := http.NewRequest(route.method, httpServer.URL+route.path, nil)
+		if requestErr != nil {
+			t.Fatal(requestErr)
+		}
+		unauthenticated, requestErr := http.DefaultClient.Do(req)
+		if requestErr != nil {
+			t.Fatal(requestErr)
+		}
+		payload, readErr := io.ReadAll(unauthenticated.Body)
+		unauthenticated.Body.Close()
+		if readErr != nil {
+			t.Fatal(readErr)
+		}
+		if unauthenticated.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("unauthenticated %s %s status=%d body=%s", route.method, route.path, unauthenticated.StatusCode, payload)
+		}
+	}
+
+	exchangeRequest := httptest.NewRequest(http.MethodPost, "/api/v1/auth/exchange?token="+testBrowserToken, nil)
+	exchangeRecorder := httptest.NewRecorder()
+	if !auth.Exchange(exchangeRecorder, exchangeRequest) {
+		t.Fatal("browser token exchange should succeed")
+	}
+	cookies := exchangeRecorder.Result().Cookies()
+	if len(cookies) != 1 {
+		t.Fatalf("session cookies=%#v", cookies)
+	}
+	session := cookies[0]
+
+	newSessionRequest := func(method, path string) *http.Request {
+		t.Helper()
+		req, requestErr := http.NewRequest(method, httpServer.URL+path, nil)
+		if requestErr != nil {
+			t.Fatal(requestErr)
+		}
+		req.AddCookie(session)
+		return req
+	}
+
+	settingsResponse, err := http.DefaultClient.Do(newSessionRequest(http.MethodGet, "/api/v1/settings/mcp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	settingsRaw, err := io.ReadAll(settingsResponse.Body)
+	settingsResponse.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settingsResponse.StatusCode != http.StatusOK {
+		t.Fatalf("settings status=%d body=%s", settingsResponse.StatusCode, settingsRaw)
+	}
+	if bytes.Contains(settingsRaw, []byte(testMCPToken)) {
+		t.Fatalf("settings exposed current MCP token: %s", settingsRaw)
+	}
+	var settings struct {
+		EndpointPath   string `json:"endpointPath"`
+		Transport      string `json:"transport"`
+		Authentication struct {
+			Scheme      string `json:"scheme"`
+			Description string `json:"description"`
+		} `json:"authentication"`
+		Token struct {
+			State string `json:"state"`
+		} `json:"token"`
+		Tools           []mcpapi.ToolMetadata `json:"tools"`
+		ServiceName     string                `json:"serviceName"`
+		ServiceVersion  string                `json:"serviceVersion"`
+		ProtocolVersion string                `json:"protocolVersion"`
+	}
+	if err = json.Unmarshal(settingsRaw, &settings); err != nil {
+		t.Fatal(err)
+	}
+	if settings.EndpointPath != mcpapi.EndpointPath || settings.Transport != mcpapi.Transport || settings.Authentication.Scheme != mcpapi.AuthenticationScheme || settings.Token.State != "configured" || settings.ServiceName != mcpapi.ServiceName || settings.ServiceVersion != mcpapi.ServiceVersion || settings.ProtocolVersion != mcpapi.DiagnosticProtocolVersion {
+		t.Fatalf("unexpected MCP settings: %+v", settings)
+	}
+	tools := mcpapi.Tools()
+	if len(settings.Tools) != len(tools) {
+		t.Fatalf("settings tools=%d, registered tools=%d", len(settings.Tools), len(tools))
+	}
+	for i := range tools {
+		if settings.Tools[i] != tools[i] {
+			t.Fatalf("settings tool %d=%+v, registered tool=%+v", i, settings.Tools[i], tools[i])
+		}
+	}
+
+	diagnosticResponse, err := http.DefaultClient.Do(newSessionRequest(http.MethodPost, "/api/v1/settings/mcp/diagnostics"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	diagnosticRaw, err := io.ReadAll(diagnosticResponse.Body)
+	diagnosticResponse.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if diagnosticResponse.StatusCode != http.StatusOK {
+		t.Fatalf("diagnostic status=%d body=%s", diagnosticResponse.StatusCode, diagnosticRaw)
+	}
+	if bytes.Contains(diagnosticRaw, []byte(testMCPToken)) {
+		t.Fatalf("diagnostic exposed current MCP token: %s", diagnosticRaw)
+	}
+	var diagnostic struct {
+		Success   bool      `json:"success"`
+		CheckedAt time.Time `json:"checkedAt"`
+		Failure   string    `json:"failure"`
+	}
+	if err = json.Unmarshal(diagnosticRaw, &diagnostic); err != nil {
+		t.Fatal(err)
+	}
+	if !diagnostic.Success || diagnostic.CheckedAt.IsZero() || diagnostic.Failure != "" {
+		t.Fatalf("unexpected diagnostic result: %+v", diagnostic)
+	}
+
+	rotationResponse, err := http.DefaultClient.Do(newSessionRequest(http.MethodPost, "/api/v1/settings/mcp-token/rotate"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rotationRaw, err := io.ReadAll(rotationResponse.Body)
+	rotationResponse.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rotationResponse.StatusCode != http.StatusCreated {
+		t.Fatalf("rotation status=%d body=%s", rotationResponse.StatusCode, rotationRaw)
+	}
+	if bytes.Contains(rotationRaw, []byte(testMCPToken)) {
+		t.Fatalf("rotation exposed old MCP token: %s", rotationRaw)
+	}
+	var rotation struct {
+		Token string `json:"token"`
+	}
+	if err = json.Unmarshal(rotationRaw, &rotation); err != nil {
+		t.Fatal(err)
+	}
+	if rotation.Token == "" || rotation.Token == testMCPToken {
+		t.Fatalf("unexpected rotated MCP token: %q", rotation.Token)
+	}
+
+	var tokenHash string
+	if err = pool.QueryRow(ctx, `SELECT token_hash FROM access_tokens WHERE name=$1 AND kind=$2`, "mcp", "mcp").Scan(&tokenHash); err != nil {
+		t.Fatal(err)
+	}
+	if tokenHash != httpapi.TokenHash(rotation.Token) {
+		t.Fatalf("persisted MCP token hash=%q, want %q", tokenHash, httpapi.TokenHash(rotation.Token))
+	}
+	mcpInitializeRequest := func(token string) *http.Request {
+		t.Helper()
+		body := bytes.NewBufferString(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"` + mcpapi.DiagnosticProtocolVersion + `","capabilities":{},"clientInfo":{"name":"integration-test","version":"1.0.0"}}}`)
+		req, requestErr := http.NewRequest(http.MethodPost, httpServer.URL+mcpapi.EndpointPath, body)
+		if requestErr != nil {
+			t.Fatal(requestErr)
+		}
+		req.Header.Set("Authorization", "Bearer "+token)
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Accept", "application/json, text/event-stream")
+		req.Header.Set("MCP-Protocol-Version", mcpapi.DiagnosticProtocolVersion)
+		return req
+	}
+	oldMCPResponse, err := http.DefaultClient.Do(mcpInitializeRequest(testMCPToken))
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldMCPBody, _ := io.ReadAll(oldMCPResponse.Body)
+	oldMCPResponse.Body.Close()
+	if oldMCPResponse.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("old MCP token status=%d body=%s", oldMCPResponse.StatusCode, oldMCPBody)
+	}
+	newMCPResponse, err := http.DefaultClient.Do(mcpInitializeRequest(rotation.Token))
+	if err != nil {
+		t.Fatal(err)
+	}
+	newMCPBody, _ := io.ReadAll(newMCPResponse.Body)
+	newMCPResponse.Body.Close()
+	if newMCPResponse.StatusCode != http.StatusOK {
+		t.Fatalf("rotated MCP token status=%d body=%s", newMCPResponse.StatusCode, newMCPBody)
+	}
+
+	updatedSettingsResponse, err := http.DefaultClient.Do(newSessionRequest(http.MethodGet, "/api/v1/settings/mcp"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	updatedSettingsRaw, err := io.ReadAll(updatedSettingsResponse.Body)
+	updatedSettingsResponse.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if updatedSettingsResponse.StatusCode != http.StatusOK {
+		t.Fatalf("updated settings status=%d body=%s", updatedSettingsResponse.StatusCode, updatedSettingsRaw)
+	}
+	if bytes.Contains(updatedSettingsRaw, []byte(rotation.Token)) || bytes.Contains(updatedSettingsRaw, []byte(testMCPToken)) {
+		t.Fatalf("updated settings exposed an MCP token: %s", updatedSettingsRaw)
+	}
+}
+
 func TestRESTAndMCPShareApplicationStateAndEvents(t *testing.T) {
 	databaseURL := os.Getenv("TEST_DATABASE_URL")
 	if databaseURL == "" {
